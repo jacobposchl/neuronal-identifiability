@@ -1,5 +1,6 @@
 """
-Evaluation and testing framework for neuron identification methods
+Comprehensive evaluation framework for neuron identification methods.
+Tests across multiple conditions with statistical analysis and visualization.
 """
 
 import numpy as np
@@ -309,3 +310,5 @@ def _print_final_verdict(all_results, specializations, n_neurons_list):
         print("\n✗ INSUFFICIENT EVIDENCE")
         print("Baselines perform as well or better than deformation features.")
         print("RECOMMENDATION: Reconsider approach or improve method.")
+
+

@@ -95,3 +95,81 @@ def generate_complex_dynamics(T=15.0, dt=0.002):
     
     return (latent_trajectory, rotation_trajectory, contraction_trajectory,
             expansion_trajectory, t_eval)
+
+
+def estimate_deformation_from_latents(latent_trajectory, dt, n_neighbors=20, n_samples=200):
+    """Estimate rotation/contraction/expansion from a latent trajectory.
+
+    Uses local linear Jacobian estimation via nearest neighbors, then decomposes
+    into symmetric/antisymmetric parts. This mimics a realistic scenario where
+    deformation is estimated from inferred latents rather than known dynamics.
+    
+    Args:
+        latent_trajectory: (n_timesteps, latent_dim) array of latent positions
+        dt: Time step
+        n_neighbors: Number of neighbors for local estimation
+        n_samples: Number of sample points for estimation
+        
+    Returns:
+        Tuple of:
+        - rotation_full: (n_timesteps,) rotation trajectory
+        - contraction_full: (n_timesteps,) contraction trajectory
+        - expansion_full: (n_timesteps,) expansion trajectory
+    """
+    from sklearn.neighbors import NearestNeighbors
+    
+    n_timesteps, latent_dim = latent_trajectory.shape
+    velocities = np.gradient(latent_trajectory, axis=0) / dt
+
+    n_neighbors = min(n_neighbors, n_timesteps)
+    nbrs = NearestNeighbors(n_neighbors=n_neighbors).fit(latent_trajectory)
+
+    n_samples = min(n_samples, n_timesteps)
+    sample_indices = np.linspace(0, n_timesteps - 1, n_samples, dtype=int)
+
+    rotation_ts = []
+    contraction_ts = []
+    expansion_ts = []
+    sample_times = []
+
+    for idx in sample_indices:
+        z = latent_trajectory[idx]
+        distances, indices = nbrs.kneighbors([z])
+
+        neighbor_points = latent_trajectory[indices[0]]
+        neighbor_velocities = velocities[indices[0]]
+
+        delta_z = neighbor_points - z
+        delta_v = neighbor_velocities - velocities[idx]
+
+        J = np.zeros((latent_dim, latent_dim))
+        for d in range(latent_dim):
+            J[d, :] = np.linalg.lstsq(delta_z, delta_v[:, d], rcond=None)[0]
+
+        S = 0.5 * (J + J.T)
+        A = 0.5 * (J - J.T)
+
+        rotation = np.linalg.norm(A, 'fro')
+        eigenvalues_S = np.linalg.eigvalsh(S)
+        contraction = -np.sum(eigenvalues_S[eigenvalues_S < 0])
+        expansion = np.sum(eigenvalues_S[eigenvalues_S > 0])
+
+        rotation_ts.append(rotation)
+        contraction_ts.append(contraction)
+        expansion_ts.append(expansion)
+        sample_times.append(idx)
+
+    sample_times = np.array(sample_times)
+    rotation_ts = np.array(rotation_ts)
+    contraction_ts = np.array(contraction_ts)
+    expansion_ts = np.array(expansion_ts)
+
+    if len(sample_times) < 2:
+        return (np.zeros(n_timesteps), np.zeros(n_timesteps), np.zeros(n_timesteps))
+
+    full_times = np.arange(n_timesteps)
+    rotation_full = np.interp(full_times, sample_times, rotation_ts)
+    contraction_full = np.interp(full_times, sample_times, contraction_ts)
+    expansion_full = np.interp(full_times, sample_times, expansion_ts)
+
+    return rotation_full, contraction_full, expansion_full
