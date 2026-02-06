@@ -66,7 +66,7 @@ class TaskBase:
             optimizer.zero_grad()
             
             # Forward pass
-            outputs, _ = rnn(inputs, return_hidden_states=False)
+            outputs = rnn(inputs, return_hidden_states=False)
             
             # Compute loss
             loss = criterion(outputs, targets)
