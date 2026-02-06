@@ -277,7 +277,9 @@ def estimate_deformation_from_rnn(hidden_states, rnn=None, dt=0.01,
     temporal_variance = np.var(hidden_states, axis=1)  # Variance over time for each unit
     mean_temporal_var = np.mean(temporal_variance)
     if mean_temporal_var < 1e-6:
-        print(f\"  Warning: Hidden states have very low temporal variance ({mean_temporal_var:.2e})\")\n        print(f\"  RNN may have learned a trivial solution with minimal dynamics\")\n    
+        print(f"  Warning: Hidden states have very low temporal variance ({mean_temporal_var:.2e})")
+        print(f"  RNN may have learned a trivial solution with minimal dynamics")
+    
     if method == 'pca_then_local':
         # Project to low-dimensional latent space
         pca = PCA(n_components=latent_dim)
