@@ -118,7 +118,7 @@ def run_comprehensive_analysis(tasks=['flipflop', 'cycling'], n_seeds=10,
             
             # Compare to baselines
             baseline_results = compare_to_baseline(
-                hidden_states, features, labels,
+                features, labels, hidden_states,
                 trial_indices=targets if hasattr(task, 'context_index') else None
             )
             
@@ -239,7 +239,7 @@ def run_comprehensive_analysis(tasks=['flipflop', 'cycling'], n_seeds=10,
         
         # Compare to ALL baselines (including TDR and selectivity)
         baseline_results = compare_to_baseline(
-            hidden_states, features, labels,
+            features, labels, hidden_states,
             trial_indices=targets if hasattr(task, 'context_index') else None
         )
         
