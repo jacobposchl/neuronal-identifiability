@@ -152,7 +152,7 @@ def classify_units(features, n_clusters=4, method='kmeans', return_details=False
         raise ValueError(f"Unknown method: {method}. Use 'kmeans' or 'argmax'")
 
 
-def interpret_clusters(features, labels, cluster_names=None):
+def interpret_clusters(features, labels, cluster_names=None, threshold=0.03):
     """
     Interpret cluster assignments by analyzing mean features.
     
@@ -160,6 +160,7 @@ def interpret_clusters(features, labels, cluster_names=None):
         features: (n_units, 3) deformation feature array
         labels: (n_units,) cluster assignments
         cluster_names: Optional list of names (default: auto-assign based on features)
+        threshold: Minimum absolute correlation to assign a type (default: 0.03)
     
     Returns:
         interpretation: Dict mapping cluster ID to interpretation dict
@@ -186,14 +187,21 @@ def interpret_clusters(features, labels, cluster_names=None):
         cluster_features = features[cluster_mask]
         mean_features = np.mean(cluster_features, axis=0)
         
-        # Determine dominant mode
-        dominant_idx = np.argmax(np.abs(mean_features))
-        dominant_mode = feature_names[dominant_idx]
+        # Determine dominant mode with threshold
+        abs_features = np.abs(mean_features)
+        dominant_idx = np.argmax(abs_features)
         dominant_value = mean_features[dominant_idx]
+        dominant_mode = feature_names[dominant_idx]
+        
+        # Check if dominant feature is significantly above threshold
+        max_abs_corr = abs_features[dominant_idx]
         
         # Auto-assign name if not provided
         if cluster_names is None:
-            if dominant_mode == 'Rotation':
+            # Require minimum absolute correlation to assign specific type
+            if max_abs_corr < threshold:
+                name = 'Mixed'  # Too weak to classify
+            elif dominant_mode == 'Rotation':
                 name = 'Rotator'
             elif dominant_mode == 'Contraction':
                 name = 'Integrator'

@@ -73,6 +73,10 @@ class TaskBase:
             
             # Backward pass
             loss.backward()
+            
+            # Gradient clipping for stability
+            torch.nn.utils.clip_grad_norm_(rnn.parameters(), max_norm=1.0)
+            
             optimizer.step()
             
             # Compute accuracy (task-specific)
@@ -246,6 +250,12 @@ class CyclingMemoryTask(TaskBase):
         self.n_patterns = n_patterns
         self.pattern_dim = pattern_dim
         self.cycle_length = cycle_length
+        
+        # Generate fixed patterns (so network can learn them)
+        torch.manual_seed(42)  # Reproducible patterns
+        self.patterns = torch.randn(n_patterns, pattern_dim)
+        self.patterns = self.patterns / torch.norm(self.patterns, dim=1, keepdim=True)
+        torch.manual_seed(torch.seed())  # Reset to random
     
     def generate_trial(self, length=200, batch_size=32):
         """
@@ -260,16 +270,15 @@ class CyclingMemoryTask(TaskBase):
         inputs = torch.zeros(batch_size, length, self.pattern_dim + 1)
         targets = torch.zeros(batch_size, length, self.pattern_dim)
         
+        # Use fixed patterns (initialized in __init__)
+        patterns = self.patterns
+        
         for b in range(batch_size):
-            # Generate random patterns for this trial
-            patterns = torch.randn(self.n_patterns, self.pattern_dim)
-            patterns = patterns / torch.norm(patterns, dim=1, keepdim=True)  # Normalize
-            
-            # Presentation phase (first n_patterns * 10 timesteps)
-            presentation_length = self.n_patterns * 10
+            # Presentation phase (first n_patterns * 15 timesteps) - longer to help learning
+            presentation_length = self.n_patterns * 15
             for i in range(self.n_patterns):
-                t_start = i * 10
-                t_end = (i + 1) * 10
+                t_start = i * 15
+                t_end = (i + 1) * 15
                 if t_end <= length:
                     inputs[b, t_start:t_end, :self.pattern_dim] = patterns[i]
                     targets[b, t_start:t_end] = patterns[i]
