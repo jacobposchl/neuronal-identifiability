@@ -18,10 +18,11 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.rnn_models import VanillaRNN, SimpleLSTM, SimpleGRU
-from src.tasks import FlipFlopTask, CyclingMemoryTask, ContextIntegrationTask
+from src.tasks import FlipFlopTask, CyclingMemoryTask, ContextIntegrationTask, get_task
 from src.deformation_utils import estimate_deformation_from_rnn, smooth_deformation_signals
-from src.rnn_features import extract_rnn_unit_features, classify_units, interpret_clusters
+from src.rnn_features import extract_rnn_unit_features, classify_units, interpret_clusters, compare_to_baseline
 from src.visualization import ensure_dirs, plot_bar, plot_comparison
+from src.statistical_tests import compare_methods_with_stats, print_comparison_table
 
 
 def test_task_specificity(n_trials=3, hidden_size=128, n_epochs=2000, verbose=True):
@@ -396,6 +397,316 @@ def test_hidden_size_scaling(task_name='flipflop', hidden_sizes=[64, 128, 256],
                   f"{results[h_size]['silhouette']['std']:.3f}")
     
     return results
+
+
+def test_statistical_significance(tasks=['flipflop', 'context'], architecture='vanilla',
+                                   hidden_size=128, n_epochs=2000, n_seeds=10, verbose=True):
+    """
+    Test 5: Statistical significance of deformation method vs baselines.
+    
+    Runs each task multiple times with different random seeds and performs
+    rigorous statistical comparisons using:
+    - Paired t-tests with effect sizes (Cohen's d)
+    - Bootstrap confidence intervals
+    - Permutation tests (non-parametric)
+    - Multiple comparison corrections (Bonferroni, FDR)
+    
+    Args:
+        tasks: List of task names to test
+        architecture: RNN architecture
+        hidden_size: Number of hidden units
+        n_epochs: Training epochs
+        n_seeds: Number of random seeds (10+ recommended)
+        verbose: Print progress
+    
+    Returns:
+        results: Dict with statistical comparison results per task
+    """
+    ensure_dirs('results/rnn_figures')
+    
+    if verbose:
+        print("\n" + "="*70)
+        print("TEST 5: STATISTICAL SIGNIFICANCE")
+        print("="*70)
+        print(f"Tasks: {tasks}")
+        print(f"Architecture: {architecture}")
+        print(f"Seeds: {n_seeds}")
+        print(f"Multiple comparison correction: Bonferroni + FDR")
+    
+    all_results = {}
+    
+    for task_name in tasks:
+        if verbose:
+            print(f"\n{'='*70}")
+            print(f"Task: {task_name.upper()}")
+            print(f"{'='*70}")
+        
+        # Collect scores across seeds
+        method_scores = {
+            'deformation': [],
+            'pca': [],
+            'raw': []
+        }
+        
+        for seed in range(n_seeds):
+            if verbose:
+                print(f"\n  Seed {seed+1}/{n_seeds}...")
+            
+            # Set random seed
+            torch.manual_seed(seed)
+            np.random.seed(seed)
+            
+            # Create task and RNN
+            task = get_task(task_name)
+            
+            arch_map = {'vanilla': VanillaRNN, 'lstm': SimpleLSTM, 'gru': SimpleGRU}
+            rnn = arch_map[architecture](task.input_size, hidden_size, task.output_size)
+            
+            # Train RNN
+            rnn, history = task.train_rnn(rnn, n_epochs=n_epochs, lr=0.001,
+                                         trial_length=100, verbose=False)
+            
+            # Extract trajectories
+            hidden_states, _, _ = task.extract_trajectories(rnn, n_trials=50, trial_length=200)
+            
+            # Estimate deformation
+            rot, con, exp, latent = estimate_deformation_from_rnn(hidden_states)
+            rot, con, exp = smooth_deformation_signals(rot, con, exp, sigma=5)
+            
+            # Extract features
+            features = extract_rnn_unit_features(hidden_states, rot, con, exp)
+            
+            # Cluster with deformation method
+            labels_def, details_def = classify_units(features, n_clusters=4, return_details=True)
+            method_scores['deformation'].append(details_def['silhouette'])
+            
+            # Compare to baselines
+            baseline_results = compare_to_baseline(hidden_states, labels_def, n_clusters=4)
+            method_scores['pca'].append(baseline_results['pca']['silhouette'])
+            method_scores['raw'].append(baseline_results['raw']['silhouette'])
+            
+            if verbose:
+                print(f"    Deformation: {details_def['silhouette']:.3f}, "
+                      f"PCA: {baseline_results['pca']['silhouette']:.3f}, "
+                      f"Raw: {baseline_results['raw']['silhouette']:.3f}")
+        
+        # Convert to numpy arrays
+        for method in method_scores:
+            method_scores[method] = np.array(method_scores[method])
+        
+        # Statistical comparison
+        if verbose:
+            print(f"\n  Running statistical tests...")
+        
+        stats_results = compare_methods_with_stats(
+            method_scores,
+            reference_method='deformation',
+            alpha=0.05
+        )
+        
+        all_results[task_name] = {
+            'scores': method_scores,
+            'statistics': stats_results
+        }
+        
+        # Print comparison table
+        if verbose:
+            print_comparison_table(stats_results, show_ci=True)
+    
+    # Overall summary
+    if verbose:
+        print(f"\n{'='*70}")
+        print("OVERALL STATISTICAL SUMMARY")
+        print(f"{'='*70}")
+        
+        for task_name, task_results in all_results.items():
+            print(f"\n{task_name.upper()}:")
+            stats = task_results['statistics']
+            
+            for method, comparison in stats['comparisons'].items():
+                par = comparison['parametric']
+                p_val = par['p_value']
+                cohens_d = par['cohens_d']
+                effect = comparison['effect_size_interpretation']
+                
+                from src.statistical_tests import format_significance_stars
+                stars = format_significance_stars(p_val)
+                
+                improvement = ((par['method1_mean'] - par['method2_mean']) / 
+                              par['method2_mean'] * 100)
+                
+                print(f"  vs {method:12s}: +{improvement:5.1f}%  "
+                      f"(d={cohens_d:5.2f}, {effect:10s})  "
+                      f"p={p_val:.4f} {stars}")
+        
+        print(f"\n{'='*70}")
+        print("✓ Statistical significance testing complete")
+        print(f"{'='*70}")
+    
+    return all_results
+
+
+def test_component_ablation(tasks=['flipflop', 'context'], architecture='vanilla',
+                             hidden_size=128, n_epochs=2000, n_trials=3, verbose=True):
+    """
+    Test 6: Component ablation study.
+    
+    Tests which deformation component (rotation, contraction, expansion) drives
+    clustering performance for different tasks.
+    
+    Hypothesis:
+    - FlipFlop (attractors) → Contraction-dominant
+    - Cycling (limit cycle) → Rotation-dominant
+    - Context (mixed) → All components useful
+    
+    Args:
+        tasks: List of task names
+        architecture: RNN architecture
+        hidden_size: Number of hidden units
+        n_epochs: Training epochs
+        n_trials: Number of trials per ablation condition
+        verbose: Print progress
+    
+    Returns:
+        results: Dict mapping task → ablation condition → scores
+    """
+    ensure_dirs('results/rnn_figures')
+    
+    if verbose:
+        print("\n" + "="*70)
+        print("TEST 6: COMPONENT ABLATION STUDY")
+        print("="*70)
+        print(f"Tasks: {tasks}")
+        print(f"Ablation conditions: rotation_only, contraction_only, expansion_only, all")
+    
+    all_results = {}
+    
+    for task_name in tasks:
+        if verbose:
+            print(f"\n{'='*70}")
+            print(f"Task: {task_name.upper()}")
+            print(f"{'='*70}")
+        
+        task_results = {
+            'rotation_only': [],
+            'contraction_only': [],
+            'expansion_only': [],
+            'all': []
+        }
+        
+        for trial in range(n_trials):
+            if verbose:
+                print(f"\n  Trial {trial+1}/{n_trials}...")
+            
+            # Create task and RNN
+            task = get_task(task_name)
+            arch_map = {'vanilla': VanillaRNN, 'lstm': SimpleLSTM, 'gru': SimpleGRU}
+            rnn = arch_map[architecture](task.input_size, hidden_size, task.output_size)
+            
+            # Train RNN
+            if verbose:
+                print(f"    Training...")
+            rnn, history = task.train_rnn(rnn, n_epochs=n_epochs, lr=0.001,
+                                         trial_length=100, verbose=False)
+            
+            # Extract trajectories
+            if verbose:
+                print(f"    Extracting trajectories...")
+            hidden_states, _, _ = task.extract_trajectories(rnn, n_trials=50, trial_length=200)
+            
+            # Estimate deformation
+            if verbose:
+                print(f"    Estimating deformation...")
+            rot, con, exp, latent = estimate_deformation_from_rnn(hidden_states)
+            rot, con, exp = smooth_deformation_signals(rot, con, exp, sigma=5)
+            
+            # Test each ablation condition
+            for condition in ['rotation_only', 'contraction_only', 'expansion_only', 'all']:
+                # Create ablated features
+                if condition == 'rotation_only':
+                    features = extract_rnn_unit_features(hidden_states, rot, 
+                                                        np.zeros_like(con), np.zeros_like(exp))
+                elif condition == 'contraction_only':
+                    features = extract_rnn_unit_features(hidden_states, np.zeros_like(rot), 
+                                                        con, np.zeros_like(exp))
+                elif condition == 'expansion_only':
+                    features = extract_rnn_unit_features(hidden_states, np.zeros_like(rot), 
+                                                        np.zeros_like(con), exp)
+                else:  # 'all'
+                    features = extract_rnn_unit_features(hidden_states, rot, con, exp)
+                
+                # Cluster
+                labels, details = classify_units(features, n_clusters=4, return_details=True)
+                task_results[condition].append(details['silhouette'])
+            
+            if verbose:
+                print(f"    R: {task_results['rotation_only'][-1]:.3f}, "
+                      f"C: {task_results['contraction_only'][-1]:.3f}, "
+                      f"E: {task_results['expansion_only'][-1]:.3f}, "
+                      f"All: {task_results['all'][-1]:.3f}")
+        
+        # Compute statistics
+        for condition in task_results:
+            scores = np.array(task_results[condition])
+            task_results[condition] = {
+                'mean': np.mean(scores),
+                'std': np.std(scores),
+                'scores': scores
+            }
+        
+        all_results[task_name] = task_results
+        
+        # Print summary
+        if verbose:
+            print(f"\n  Results for {task_name}:")
+            print(f"    Rotation only:    {task_results['rotation_only']['mean']:.3f} ± {task_results['rotation_only']['std']:.3f}")
+            print(f"    Contraction only: {task_results['contraction_only']['mean']:.3f} ± {task_results['contraction_only']['std']:.3f}")
+            print(f"    Expansion only:   {task_results['expansion_only']['mean']:.3f} ± {task_results['expansion_only']['std']:.3f}")
+            print(f"    All components:   {task_results['all']['mean']:.3f} ± {task_results['all']['std']:.3f}")
+            
+            # Determine dominant component
+            component_means = {
+                'Rotation': task_results['rotation_only']['mean'],
+                'Contraction': task_results['contraction_only']['mean'],
+                'Expansion': task_results['expansion_only']['mean']
+            }
+            dominant = max(component_means, key=component_means.get)
+            print(f"    → Dominant component: {dominant}")
+    
+    # Overall summary
+    if verbose:
+        print(f"\n{'='*70}")
+        print("ABLATION STUDY SUMMARY")
+        print(f"{'='*70}\n")
+        
+        for task_name, task_results in all_results.items():
+            print(f"{task_name.upper()}:")
+            
+            # Find best single component
+            single_components = {
+                'Rotation': task_results['rotation_only']['mean'],
+                'Contraction': task_results['contraction_only']['mean'],
+                'Expansion': task_results['expansion_only']['mean']
+            }
+            best_component = max(single_components, key=single_components.get)
+            best_score = single_components[best_component]
+            all_score = task_results['all']['mean']
+            
+            print(f"  Best single component: {best_component} ({best_score:.3f})")
+            print(f"  All components: {all_score:.3f}")
+            
+            if all_score > best_score:
+                improvement = ((all_score - best_score) / best_score) * 100
+                print(f"  → Combining components improves by {improvement:.1f}%")
+            else:
+                print(f"  → Single component sufficient")
+            print()
+        
+        print(f"{'='*70}")
+        print("✓ Component ablation study complete")
+        print(f"{'='*70}")
+    
+    return all_results
 
 
 def main():

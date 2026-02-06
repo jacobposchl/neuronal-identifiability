@@ -264,7 +264,187 @@ def print_cluster_summary(interpretation):
     print("="*70)
 
 
-def compare_to_baseline(features, labels, hidden_states):
+def compare_to_baseline(features, labels, hidden_states, trial_indices=None):
+    """
+    Compare deformation-based clustering to baseline methods.
+    
+    Baselines:
+    1. PCA: PCA on raw activations, then K-means
+    2. Raw: K-means directly on raw activation samples
+    3. TDR: Targeted Dimensionality Reduction (task-aligned PCA)
+    4. Selectivity: Clustering based on unit selectivity indices
+    
+    Args:
+        features: (n_units, 3) deformation features
+        labels: (n_units,) cluster assignments from deformation method
+        hidden_states: (n_units, n_timesteps) raw RNN activations
+        trial_indices: Optional (n_timesteps,) array indicating trial membership
+    
+    Returns:
+        comparison: Dict with silhouette scores and details for each method
+    """
+    from sklearn.cluster import KMeans
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.metrics import silhouette_score
+    from sklearn.decomposition import PCA
+    
+    n_units = features.shape[0]
+    n_clusters = len(np.unique(labels))
+    
+    # Normalize deformation features
+    scaler = StandardScaler()
+    features_norm = scaler.fit_transform(features)
+    
+    # Baseline 1: PCA on raw activations
+    pca = PCA(n_components=3)
+    pca_features = pca.fit_transform(hidden_states)
+    pca_features_norm = StandardScaler().fit_transform(pca_features)
+    
+    kmeans_pca = KMeans(n_clusters=n_clusters, random_state=42, n_init=20)
+    labels_pca = kmeans_pca.fit_predict(pca_features_norm)
+    
+    # Baseline 2: K-means on raw activations (sample subset of timepoints)
+    n_samples = min(1000, hidden_states.shape[1])
+    sample_indices = np.linspace(0, hidden_states.shape[1]-1, n_samples, dtype=int)
+    raw_features = hidden_states[:, sample_indices]
+    raw_features_norm = StandardScaler().fit_transform(raw_features)
+    
+    kmeans_raw = KMeans(n_clusters=n_clusters, random_state=42, n_init=20)
+    labels_raw = kmeans_raw.fit_predict(raw_features_norm)
+    
+    # Baseline 3: TDR (Targeted Dimensionality Reduction)
+    try:
+        tdr_features = tdr_baseline(hidden_states, trial_indices)
+        tdr_features_norm = StandardScaler().fit_transform(tdr_features)
+        kmeans_tdr = KMeans(n_clusters=n_clusters, random_state=42, n_init=20)
+        labels_tdr = kmeans_tdr.fit_predict(tdr_features_norm)
+        silhouette_tdr = silhouette_score(tdr_features_norm, labels_tdr) if n_units > n_clusters else 0
+    except:
+        silhouette_tdr = None
+    
+    # Baseline 4: Selectivity-based clustering
+    try:
+        selectivity_features = selectivity_baseline(hidden_states, trial_indices)
+        selectivity_features_norm = StandardScaler().fit_transform(selectivity_features)
+        kmeans_sel = KMeans(n_clusters=n_clusters, random_state=42, n_init=20)
+        labels_sel = kmeans_sel.fit_predict(selectivity_features_norm)
+        silhouette_sel = silhouette_score(selectivity_features_norm, labels_sel) if n_units > n_clusters else 0
+    except:
+        silhouette_sel = None
+    
+    # Compute silhouette scores
+    comparison = {
+        'deformation': {'silhouette': silhouette_score(features_norm, labels) if n_units > n_clusters else 0},
+        'pca': {'silhouette': silhouette_score(pca_features_norm, labels_pca) if n_units > n_clusters else 0},
+        'raw': {'silhouette': silhouette_score(raw_features_norm, labels_raw) if n_units > n_clusters else 0}
+    }
+    
+    if silhouette_tdr is not None:
+        comparison['tdr'] = {'silhouette': silhouette_tdr}
+    if silhouette_sel is not None:
+        comparison['selectivity'] = {'silhouette': silhouette_sel}
+    
+    return comparison
+
+
+def tdr_baseline(hidden_states, trial_indices=None, n_components=3):
+    """
+    Targeted Dimensionality Reduction (TDR) baseline.
+    
+    Simplified version inspired by Mante et al. 2013:
+    1. Compute task-relevant features (temporal statistics per trial)
+    2. Regress out task variables from hidden states
+    3. PCA on residuals to find task-independent structure
+    
+    Args:
+        hidden_states: (n_units, n_timesteps) RNN activations
+        trial_indices: (n_timesteps,) array indicating trial membership
+        n_components: Number of PCA components
+    
+    Returns:
+        tdr_features: (n_units, n_components) task-aligned features
+    """
+    from sklearn.decomposition import PCA
+    from sklearn.linear_model import LinearRegression
+    
+    n_units, n_timesteps = hidden_states.shape
+    
+    # If no trial indices, create fake trials based on temporal bins
+    if trial_indices is None:
+        trial_length = 200
+        n_trials = max(1, n_timesteps // trial_length)
+        trial_indices = np.repeat(np.arange(n_trials), trial_length)[:n_timesteps]
+    
+    # Compute task variables: mean activity per trial for each unit
+    unique_trials = np.unique(trial_indices)
+    trial_means = np.zeros((n_units, len(unique_trials)))
+    
+    for i, trial_id in enumerate(unique_trials):
+        trial_mask = trial_indices == trial_id
+        trial_means[:, i] = hidden_states[:, trial_mask].mean(axis=1)
+    
+    # Regress out trial structure
+    residuals = np.zeros_like(hidden_states)
+    for unit_idx in range(n_units):
+        # For each unit, regress activity against trial means
+        X = trial_means[unit_idx, trial_indices].reshape(-1, 1)
+        y = hidden_states[unit_idx, :]
+        
+        reg = LinearRegression().fit(X, y)
+        residuals[unit_idx, :] = y - reg.predict(X)
+    
+    # PCA on residuals
+    pca = PCA(n_components=n_components)
+    tdr_features = pca.fit_transform(residuals.T).T  # Transpose back to (n_units, n_components)
+    
+    return tdr_features.T  # Return (n_units, n_components)
+
+
+def selectivity_baseline(hidden_states, trial_indices=None, n_bins=5):
+    """
+    Selectivity-based clustering baseline.
+    
+    Computes selectivity indices for each unit:
+    - Temporal selectivity: variance across time
+    - Amplitude selectivity: mean absolute activation
+    - Variance selectivity: standard deviation
+    - Peak selectivity: max activation amplitude
+    
+    Args:
+        hidden_states: (n_units, n_timesteps) RNN activations
+        trial_indices: (n_timesteps,) array indicating trial membership (optional)
+        n_bins: Number of temporal bins for selectivity analysis
+    
+    Returns:
+        selectivity_features: (n_units, 4) selectivity indices
+    """
+    from scipy.stats import f_oneway
+    
+    n_units, n_timesteps = hidden_states.shape
+    
+    features = []
+    
+    for unit_idx in range(n_units):
+        unit_activity = hidden_states[unit_idx, :]
+        
+        # Feature 1: Temporal selectivity (variance across time)
+        temporal_var = np.var(unit_activity)
+        
+        # Feature 2: Amplitude selectivity (mean absolute activation)
+        amplitude = np.mean(np.abs(unit_activity))
+        
+        # Feature 3: Variance selectivity (coefficient of variation)
+        cv = np.std(unit_activity) / (np.abs(np.mean(unit_activity)) + 1e-10)
+        
+        # Feature 4: Peak selectivity (max absolute activation)
+        peak = np.max(np.abs(unit_activity))
+        
+        features.append([temporal_var, amplitude, cv, peak])
+    
+    return np.array(features)
+
+
+def compare_to_baseline(features, labels, hidden_states, trial_indices=None):
     """
     Compare deformation-based clustering to baseline methods.
     

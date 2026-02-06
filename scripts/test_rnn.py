@@ -230,7 +230,7 @@ def run_single_task_experiment(task_name='flipflop', architecture='vanilla',
     return results
 
 
-def run_multi_task_comparison(tasks=['flipflop', 'cycling', 'context'],
+def run_multi_task_comparison(tasks=['flipflop', 'cycling', 'context', 'mnist'],
                                architecture='vanilla', hidden_size=128,
                                n_epochs=2000, verbose=True):
     """
@@ -240,6 +240,7 @@ def run_multi_task_comparison(tasks=['flipflop', 'cycling', 'context'],
     - FlipFlop → Integrators (memory maintenance)
     - Cycling → Rotators (oscillatory dynamics)
     - Context → Mixed (integration + switching)
+    - MNIST → Integrators (visual evidence accumulation)
     
     Args:
         tasks: List of task names

@@ -372,12 +372,128 @@ class ContextIntegrationTask(TaskBase):
                 "Explorers (20-30%)")
 
 
+class SequentialMNISTTask(TaskBase):
+    """
+    Sequential MNIST digit classification task.
+    
+    Images are presented as 784-step sequences (one pixel per timestep, row-major order).
+    The network must integrate visual information over time and output the digit class
+    at the final timestep. This task requires temporal integration and pattern recognition.
+    
+    Expected dynamics: Contraction-dominant (evidence accumulation) + expansion (decision)
+    Expected unit types: Integrators (50-60%), Explorers (20-30%), Rotators (10-20%)
+    
+    Args:
+        data_root: Directory to store MNIST data (default: './data')
+        train: Use training set (True) or test set (False)
+        normalize: Whether to normalize pixel values to [-1, 1] (default: True)
+    """
+    
+    def __init__(self, data_root='./data', train=True, normalize=True):
+        super().__init__("SequentialMNIST", input_size=1, output_size=10)
+        self.data_root = data_root
+        self.train = train
+        self.normalize = normalize
+        
+        # Import torchvision (already in requirements.txt)
+        try:
+            from torchvision import datasets, transforms
+        except ImportError:
+            raise ImportError("torchvision required for MNIST task. Install with: pip install torchvision")
+        
+        # Load MNIST dataset
+        transform_list = [transforms.ToTensor()]
+        if normalize:
+            # Normalize to [-1, 1] instead of [0, 1]
+            transform_list.append(transforms.Normalize((0.5,), (0.5,)))
+        
+        transform = transforms.Compose(transform_list)
+        
+        self.dataset = datasets.MNIST(
+            root=data_root,
+            train=train,
+            transform=transform,
+            download=True
+        )
+        
+        # Pre-compute sequence length (28x28 = 784 pixels)
+        self.seq_length = 28 * 28
+        
+        print(f"Loaded MNIST {'training' if train else 'test'} set: {len(self.dataset)} images")
+    
+    def generate_trial(self, length=None, batch_size=32):
+        """
+        Generate sequential MNIST trials.
+        
+        Args:
+            length: Sequence length (ignored, always 784 for MNIST)
+            batch_size: Number of images in batch
+        
+        Returns:
+            inputs: (batch, 784, 1) - pixel values presented sequentially
+            targets: (batch, 784, 10) - one-hot labels (only final timestep matters)
+        """
+        # Override length to MNIST dimensions
+        length = self.seq_length
+        
+        # Sample random batch from dataset
+        indices = torch.randint(0, len(self.dataset), (batch_size,))
+        
+        inputs = torch.zeros(batch_size, length, 1)
+        targets = torch.zeros(batch_size, length, 10)
+        
+        for i, idx in enumerate(indices):
+            image, label = self.dataset[idx]
+            
+            # Flatten image to sequence (28x28 -> 784)
+            pixel_sequence = image.view(-1)  # Shape: (784,)
+            
+            # Assign to inputs (one pixel per timestep)
+            inputs[i, :, 0] = pixel_sequence
+            
+            # One-hot encode label
+            targets[i, :, label] = 1.0  # Repeat label across all timesteps
+        
+        return inputs, targets
+    
+    def _compute_accuracy(self, outputs, targets):
+        """
+        Classification accuracy on final timestep.
+        
+        Args:
+            outputs: (batch, seq_len, 10) network outputs
+            targets: (batch, seq_len, 10) one-hot labels
+        
+        Returns:
+            accuracy: Fraction of correctly classified digits
+        """
+        # Use final timestep for classification
+        final_outputs = outputs[:, -1, :]  # (batch, 10)
+        final_targets = targets[:, -1, :]  # (batch, 10)
+        
+        # Get predicted class (argmax)
+        predictions = torch.argmax(final_outputs, dim=1)
+        true_labels = torch.argmax(final_targets, dim=1)
+        
+        # Compute accuracy
+        correct = (predictions == true_labels).float()
+        accuracy = torch.mean(correct).item()
+        
+        return accuracy
+    
+    def get_expected_dynamics(self):
+        return ("Contraction-dominant: Evidence accumulation over 784 timesteps\n"
+                "Expected: Visual feature integration + classification decision\n"
+                "Unit distribution: Integrators (50-60%), Explorers (20-30%), "
+                "Rotators (10-20%)")
+
+
 def get_task(task_name, **kwargs):
     """
     Factory function to get task by name.
     
     Args:
-        task_name: 'flipflop', 'cycling', or 'context'
+        task_name: 'flipflop', 'cycling', 'context', or 'mnist'
         **kwargs: Task-specific parameters
     
     Returns:
@@ -386,7 +502,8 @@ def get_task(task_name, **kwargs):
     task_map = {
         'flipflop': FlipFlopTask,
         'cycling': CyclingMemoryTask,
-        'context': ContextIntegrationTask
+        'context': ContextIntegrationTask,
+        'mnist': SequentialMNISTTask
     }
     
     task_name_lower = task_name.lower()
