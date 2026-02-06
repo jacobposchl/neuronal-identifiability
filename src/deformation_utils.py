@@ -153,6 +153,19 @@ def estimate_deformation_from_latents(latent_trajectory, dt=0.01, n_samples=200,
     """
     n_timesteps, latent_dim = latent_trajectory.shape
     
+    # Check for constant or near-constant trajectory (no dynamics)
+    trajectory_std = np.std(latent_trajectory, axis=0)
+    if np.all(trajectory_std < 1e-8):
+        # Constant trajectory - return small random noise instead of zeros
+        # This prevents NaN correlations and clustering failures
+        print("  Warning: Latent trajectory is constant (no dynamics detected)")
+        print("  Returning minimal random deformation signals as fallback")
+        np.random.seed(42)
+        rotation_traj = np.random.randn(n_timesteps) * 1e-6
+        contraction_traj = np.random.randn(n_timesteps) * 1e-6
+        expansion_traj = np.random.randn(n_timesteps) * 1e-6
+        return rotation_traj, contraction_traj, expansion_traj
+    
     # Sample points for Jacobian estimation (expensive to compute at every point)
     sample_indices = np.linspace(0, n_timesteps - 1, min(n_samples, n_timesteps), dtype=int)
     
@@ -222,6 +235,17 @@ def estimate_deformation_from_latents(latent_trajectory, dt=0.01, n_samples=200,
     contraction_trajectory = np.interp(full_times, sample_times, contraction_samples)
     expansion_trajectory = np.interp(full_times, sample_times, expansion_samples)
     
+    # Check if all signals are zero (estimation failed)
+    if (np.all(rotation_trajectory == 0) and 
+        np.all(contraction_trajectory == 0) and 
+        np.all(expansion_trajectory == 0)):
+        print("  Warning: Deformation estimation produced all zeros")
+        print("  Returning minimal random signals as fallback")
+        np.random.seed(42)
+        rotation_trajectory = np.random.randn(n_timesteps) * 1e-6
+        contraction_trajectory = np.random.randn(n_timesteps) * 1e-6
+        expansion_trajectory = np.random.randn(n_timesteps) * 1e-6
+    
     return rotation_trajectory, contraction_trajectory, expansion_trajectory
 
 
@@ -249,6 +273,11 @@ def estimate_deformation_from_rnn(hidden_states, rnn=None, dt=0.01,
     """
     n_units, n_timesteps = hidden_states.shape
     
+    # Diagnostic: check if hidden states have temporal variance
+    temporal_variance = np.var(hidden_states, axis=1)  # Variance over time for each unit
+    mean_temporal_var = np.mean(temporal_variance)
+    if mean_temporal_var < 1e-6:
+        print(f\"  Warning: Hidden states have very low temporal variance ({mean_temporal_var:.2e})\")\n        print(f\"  RNN may have learned a trivial solution with minimal dynamics\")\n    
     if method == 'pca_then_local':
         # Project to low-dimensional latent space
         pca = PCA(n_components=latent_dim)

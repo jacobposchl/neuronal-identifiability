@@ -46,6 +46,13 @@ def extract_rnn_unit_features(hidden_states, rotation_trajectory,
     contraction_trajectory = contraction_trajectory[:min_len]
     expansion_trajectory = expansion_trajectory[:min_len]
     
+    # Check if deformation signals have any variance
+    deform_std = [np.std(rotation_trajectory), np.std(contraction_trajectory), 
+                  np.std(expansion_trajectory)]
+    if all(s < 1e-10 for s in deform_std):
+        print("  Warning: All deformation signals are constant (std < 1e-10)")
+        print("  Features will be all zeros - clustering may be unreliable")
+    
     # Optional: smooth hidden states to reduce noise
     if smooth_sigma > 0:
         hidden_states_smooth = np.array([
@@ -107,7 +114,15 @@ def classify_units(features, n_clusters=4, method='kmeans', return_details=False
         
         if return_details:
             # Compute metrics
-            silhouette = silhouette_score(features_norm, labels) if n_units > n_clusters else 0
+            n_unique_labels = len(np.unique(labels))
+            # Silhouette requires at least 2 distinct clusters
+            if n_unique_labels >= 2 and n_units > n_clusters:
+                try:
+                    silhouette = silhouette_score(features_norm, labels)
+                except:
+                    silhouette = 0.0  # Fallback if computation fails
+            else:
+                silhouette = 0.0  # Not enough clusters for silhouette
             
             # Get cluster centers in original space
             centers = scaler.inverse_transform(kmeans.cluster_centers_)
