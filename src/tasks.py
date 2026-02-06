@@ -186,8 +186,8 @@ class FlipFlopTask(TaskBase):
         Generate flip-flop sequences.
         
         Returns:
-            inputs: (batch, length, n_bits) - flip signals
-            targets: (batch, length, n_bits) - current bit states
+            inputs: (batch, length, n_bits) - flip signals (+1, -1, or 0)
+            targets: (batch, length, n_bits) - current bit states (+1 or -1)
         """
         inputs = torch.zeros(batch_size, length, self.n_bits)
         targets = torch.zeros(batch_size, length, self.n_bits)
@@ -197,12 +197,14 @@ class FlipFlopTask(TaskBase):
             state = torch.randint(0, 2, (self.n_bits,)) * 2.0 - 1.0  # Random +1/-1
             
             for t in range(length):
-                # Random flips
+                # Random updates: flip_prob chance to set each bit
                 for bit in range(self.n_bits):
                     if np.random.rand() < self.flip_prob:
-                        flip_value = np.random.choice([1.0, -1.0])
-                        inputs[b, t, bit] = flip_value
-                        state[bit] *= -1  # Toggle bit
+                        # Randomly set to +1 or -1
+                        new_value = np.random.choice([1.0, -1.0])
+                        inputs[b, t, bit] = new_value
+                        state[bit] = new_value  # SET bit to input value
+                    # else: input remains 0, state unchanged
                 
                 # Output current state
                 targets[b, t] = state.clone()
