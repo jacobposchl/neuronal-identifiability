@@ -7,9 +7,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-def ensure_dirs():
-    """Ensure results/figures directory exists."""
-    os.makedirs('results/figures', exist_ok=True)
+def ensure_dirs(path='results/figures'):
+    """
+    Ensure directory exists.
+    
+    Args:
+        path: Directory path to create (default: 'results/figures')
+    """
+    os.makedirs(path, exist_ok=True)
 
 
 def plot_bar(labels, stats, path, ylabel):
