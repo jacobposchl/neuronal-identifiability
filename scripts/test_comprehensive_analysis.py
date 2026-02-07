@@ -26,7 +26,7 @@ from src.rnn_features import extract_rnn_unit_features, classify_units, compare_
 from src.statistical_tests import (
     paired_ttest, bootstrap_ci, permutation_test,
     bonferroni_correction, fdr_correction,
-    print_comparison_table
+    compare_methods_with_stats, print_comparison_table
 )
 from src.visualization import ensure_dirs
 
@@ -139,9 +139,12 @@ def run_comprehensive_analysis(tasks=['flipflop', 'cycling'], n_seeds=10,
             print(f"{'='*80}")
         
         # Paired t-test: Deformation vs PCA
-        t_stat, p_value, effect_size = paired_ttest(
+        ttest_result = paired_ttest(
             scores['deformation'], scores['pca']
         )
+        t_stat = ttest_result['t_statistic']
+        p_value = ttest_result['p_value']
+        effect_size = ttest_result['cohens_d']
         
         if verbose:
             print(f"\nPaired t-test (Deformation vs PCA):")
@@ -155,13 +158,14 @@ def run_comprehensive_analysis(tasks=['flipflop', 'cycling'], n_seeds=10,
         
         if verbose:
             print(f"\nBootstrap 95% Confidence Intervals:")
-            print(f"  Deformation: [{deformation_ci[0]:.3f}, {deformation_ci[1]:.3f}]")
-            print(f"  PCA:         [{pca_ci[0]:.3f}, {pca_ci[1]:.3f}]")
+            print(f"  Deformation: [{deformation_ci[0]:.3f}, {deformation_ci[2]:.3f}]")
+            print(f"  PCA:         [{pca_ci[0]:.3f}, {pca_ci[2]:.3f}]")
         
         # Permutation test
-        perm_p_value = permutation_test(
+        perm_result = permutation_test(
             scores['deformation'], scores['pca'], n_permutations=10000
         )
+        perm_p_value = perm_result['p_value']
         
         if verbose:
             print(f"\nPermutation test p-value: {perm_p_value:.4f}")
@@ -180,12 +184,16 @@ def run_comprehensive_analysis(tasks=['flipflop', 'cycling'], n_seeds=10,
         # Comparison table
         if verbose:
             print(f"\n{'='*80}")
-            comparison_data = {
-                'Deformation': scores['deformation'],
-                'PCA': scores['pca'],
-                'Raw': scores['raw']
+            # Use compare_methods_with_stats for proper table formatting
+            method_scores = {
+                'deformation': np.array(scores['deformation']),
+                'pca': np.array(scores['pca']),
+                'raw': np.array(scores['raw'])
             }
-            print_comparison_table(comparison_data, baseline='PCA', alpha=0.05)
+            comparison_results = compare_methods_with_stats(
+                method_scores, reference_method='deformation', alpha=0.05
+            )
+            print_comparison_table(comparison_results, show_ci=True)
         
         # Store results
         all_results[f'{task_name}_statistics'] = {
@@ -295,9 +303,10 @@ def run_comprehensive_analysis(tasks=['flipflop', 'cycling'], n_seeds=10,
             if verbose and trial_idx % 5 == 0:
                 print(f"\nTrial {trial_idx+1}/20")
             
-            # Train RNN
-            np.random.seed(trial_idx)
-            torch.manual_seed(trial_idx)
+            # Train RNN (use offset seed to avoid overlap with Part 1)
+            seed = trial_idx + 1000
+            np.random.seed(seed)
+            torch.manual_seed(seed)
             
             rnn = VanillaRNN(task.input_size, hidden_size, task.output_size)
             rnn, _ = task.train_rnn(rnn, n_epochs=n_epochs, lr=0.001,
@@ -314,19 +323,39 @@ def run_comprehensive_analysis(tasks=['flipflop', 'cycling'], n_seeds=10,
             
             # Test each condition
             for condition_name, (use_rot, use_con, use_exp) in conditions.items():
-                # Build features using selected components
-                features = []
-                if use_rot:
-                    features.append(np.corrcoef(hidden_states, rot)[hidden_size:, :hidden_size].T)
-                if use_con:
-                    features.append(np.corrcoef(hidden_states, con)[hidden_size:, :hidden_size].T)
-                if use_exp:
-                    features.append(np.corrcoef(hidden_states, exp)[hidden_size:, :hidden_size].T)
+                # Build features using proper correlation computation per unit
+                from scipy.ndimage import gaussian_filter1d
                 
-                if len(features) > 0:
-                    features = np.hstack(features)
-                else:
+                # Smooth deformation signals
+                rot_smooth = gaussian_filter1d(rot, sigma=5) if use_rot else None
+                con_smooth = gaussian_filter1d(con, sigma=5) if use_con else None
+                exp_smooth = gaussian_filter1d(exp, sigma=5) if use_exp else None
+                
+                # Extract correlations for each unit
+                n_units = hidden_states.shape[0]
+                feature_list = []
+                
+                for unit_idx in range(n_units):
+                    unit_activity = hidden_states[unit_idx, :]
+                    unit_features = []
+                    
+                    if use_rot and rot_smooth is not None:
+                        rot_corr = np.corrcoef(unit_activity, rot_smooth)[0, 1]
+                        unit_features.append(rot_corr)
+                    if use_con and con_smooth is not None:
+                        con_corr = np.corrcoef(unit_activity, con_smooth)[0, 1]
+                        unit_features.append(con_corr)
+                    if use_exp and exp_smooth is not None:
+                        exp_corr = np.corrcoef(unit_activity, exp_smooth)[0, 1]
+                        unit_features.append(exp_corr)
+                    
+                    if len(unit_features) > 0:
+                        feature_list.append(unit_features)
+                
+                if len(feature_list) == 0:
                     continue
+                
+                features = np.array(feature_list)  # Shape: (n_units, n_features)
                 
                 # Cluster
                 labels, _ = classify_units(features, n_clusters=4, return_details=True)

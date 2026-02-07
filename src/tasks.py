@@ -166,31 +166,34 @@ class TaskBase:
 
 class FlipFlopTask(TaskBase):
     """
-    3-bit flip-flop memory task.
+    N-bit memory register task (set-reset flip-flop).
     
-    The network must maintain memory of 3 binary values. Each input channel
-    can send a flip signal (+1 or -1) to toggle that bit, or no signal (0).
-    The network outputs the current state of all 3 bits.
+    The network must maintain memory of N binary values. Each input channel
+    can send a SET signal (+1 or -1) to directly set that bit, or no signal (0)
+    to leave it unchanged. The network outputs the current state of all bits.
+    
+    Note: This implements SET semantics (input directly sets state), not TOGGLE.
+    This is equivalent to an SR (set-reset) flip-flop in digital electronics.
     
     Expected dynamics: Contraction-dominant (stable attractors for each state)
     Expected unit types: Integrators >> Rotators (memory maintenance)
     
     Args:
         n_bits: Number of bits to store (default 3)
-        flip_prob: Probability of flip per bit per timestep (default 0.05)
+        flip_prob: Probability of set signal per bit per timestep (default 0.05)
     """
     
     def __init__(self, n_bits=3, flip_prob=0.05):
-        super().__init__("FlipFlop", n_bits, n_bits)
+        super().__init__("MemoryRegister", n_bits, n_bits)
         self.n_bits = n_bits
         self.flip_prob = flip_prob
     
     def generate_trial(self, length=200, batch_size=32):
         """
-        Generate flip-flop sequences.
+        Generate memory register sequences.
         
         Returns:
-            inputs: (batch, length, n_bits) - flip signals (+1, -1, or 0)
+            inputs: (batch, length, n_bits) - set signals (+1, -1, or 0)
             targets: (batch, length, n_bits) - current bit states (+1 or -1)
         """
         inputs = torch.zeros(batch_size, length, self.n_bits)
@@ -431,7 +434,7 @@ class SequentialMNISTTask(TaskBase):
         
         Returns:
             inputs: (batch, 784, 1) - pixel values presented sequentially
-            targets: (batch, 784, 10) - one-hot labels (only final timestep matters)
+            targets: (batch, 784, 10) - one-hot labels (only final timestep is non-zero)
         """
         # Override length to MNIST dimensions
         length = self.seq_length
@@ -451,8 +454,9 @@ class SequentialMNISTTask(TaskBase):
             # Assign to inputs (one pixel per timestep)
             inputs[i, :, 0] = pixel_sequence
             
-            # One-hot encode label
-            targets[i, :, label] = 1.0  # Repeat label across all timesteps
+            # One-hot encode label - only at final timestep
+            # This ensures loss is only computed on the classification decision
+            targets[i, -1, label] = 1.0  # Only final timestep has target
         
         return inputs, targets
     

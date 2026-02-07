@@ -351,53 +351,69 @@ def tdr_baseline(hidden_states, trial_indices=None, n_components=3):
     """
     Targeted Dimensionality Reduction (TDR) baseline.
     
-    Simplified version inspired by Mante et al. 2013:
-    1. Compute task-relevant features (temporal statistics per trial)
-    2. Regress out task variables from hidden states
-    3. PCA on residuals to find task-independent structure
+    Simplified version inspired by Mante et al. 2013.
+    NOTE: This is a simplified approximation. True TDR requires explicit task
+    variables (stimulus identity, context, etc.) which are not always available.
+    This version uses temporal structure as a proxy.
+    
+    Approach:
+    1. Compute variance explained by temporal bins (proxy for task structure)
+    2. PCA on variance-normalized activations
     
     Args:
         hidden_states: (n_units, n_timesteps) RNN activations
-        trial_indices: (n_timesteps,) array indicating trial membership
+        trial_indices: (n_timesteps,) array indicating trial membership (optional)
         n_components: Number of PCA components
     
     Returns:
-        tdr_features: (n_units, n_components) task-aligned features
+        tdr_features: (n_units, n_components) features
     """
     from sklearn.decomposition import PCA
-    from sklearn.linear_model import LinearRegression
+    from sklearn.preprocessing import StandardScaler
     
     n_units, n_timesteps = hidden_states.shape
     
-    # If no trial indices, create fake trials based on temporal bins
+    # Simple approach: compute temporal statistics per unit
+    # This captures how units vary across task epochs
+    features = []
+    
+    # Divide into temporal bins if no trial indices
     if trial_indices is None:
-        trial_length = 200
-        n_trials = max(1, n_timesteps // trial_length)
-        trial_indices = np.repeat(np.arange(n_trials), trial_length)[:n_timesteps]
+        n_bins = 10
+        bin_size = n_timesteps // n_bins
+        trial_indices = np.repeat(np.arange(n_bins), bin_size)[:n_timesteps]
     
-    # Compute task variables: mean activity per trial for each unit
-    unique_trials = np.unique(trial_indices)
-    trial_means = np.zeros((n_units, len(unique_trials)))
+    unique_bins = np.unique(trial_indices)
     
-    for i, trial_id in enumerate(unique_trials):
-        trial_mask = trial_indices == trial_id
-        trial_means[:, i] = hidden_states[:, trial_mask].mean(axis=1)
-    
-    # Regress out trial structure
-    residuals = np.zeros_like(hidden_states)
     for unit_idx in range(n_units):
-        # For each unit, regress activity against trial means
-        X = trial_means[unit_idx, trial_indices].reshape(-1, 1)
-        y = hidden_states[unit_idx, :]
+        unit_activity = hidden_states[unit_idx, :]
         
-        reg = LinearRegression().fit(X, y)
-        residuals[unit_idx, :] = y - reg.predict(X)
+        # Compute mean and variance per temporal bin
+        bin_means = []
+        bin_vars = []
+        for bin_id in unique_bins:
+            bin_mask = trial_indices == bin_id
+            if np.sum(bin_mask) > 0:
+                bin_means.append(np.mean(unit_activity[bin_mask]))
+                bin_vars.append(np.var(unit_activity[bin_mask]))
+        
+        # Features: variance across bins (temporal modulation)
+        features.append([
+            np.var(bin_means),  # Temporal modulation
+            np.mean(bin_vars),  # Within-bin variability
+            np.mean(np.abs(bin_means)),  # Mean activity
+        ])
     
-    # PCA on residuals
-    pca = PCA(n_components=n_components)
-    tdr_features = pca.fit_transform(residuals.T).T  # Transpose back to (n_units, n_components)
+    features = np.array(features)
     
-    return tdr_features.T  # Return (n_units, n_components)
+    # Standardize and apply PCA
+    scaler = StandardScaler()
+    features_norm = scaler.fit_transform(features)
+    
+    pca = PCA(n_components=min(n_components, features.shape[1]))
+    tdr_features = pca.fit_transform(features_norm)
+    
+    return tdr_features
 
 
 def selectivity_baseline(hidden_states, trial_indices=None, n_bins=5):

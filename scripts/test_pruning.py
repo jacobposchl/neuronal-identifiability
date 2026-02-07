@@ -40,43 +40,80 @@ def apply_unit_mask(rnn, mask):
     Returns:
         rnn: Modified RNN with pruned units
     """
-    mask = torch.tensor(mask, dtype=torch.float32)
+    mask_tensor = torch.tensor(mask, dtype=torch.bool)
     
     if isinstance(rnn, VanillaRNN):
-        # Mask recurrent weights (both input and output)
         with torch.no_grad():
-            # Input to hidden: zero rows for masked units
-            rnn.rnn.weight_hh_l0.data *= mask.unsqueeze(1)
-            # Hidden to hidden: zero rows and columns
-            rnn.rnn.weight_hh_l0.data *= mask.unsqueeze(0)
-            # Hidden to output: zero columns for masked units
-            rnn.fc.weight.data *= mask.unsqueeze(0)
+            # Mask input-to-hidden weights (zero rows for pruned units)
+            rnn.rnn.weight_ih_l0.data[~mask_tensor, :] = 0
+            
+            # Mask hidden-to-hidden weights (zero rows AND columns for pruned units)
+            rnn.rnn.weight_hh_l0.data[~mask_tensor, :] = 0  # Zero rows (output)
+            rnn.rnn.weight_hh_l0.data[:, ~mask_tensor] = 0  # Zero columns (input)
+            
+            # Mask biases for pruned units
+            if hasattr(rnn.rnn, 'bias_ih_l0') and rnn.rnn.bias_ih_l0 is not None:
+                rnn.rnn.bias_ih_l0.data[~mask_tensor] = 0
+                rnn.rnn.bias_hh_l0.data[~mask_tensor] = 0
+            
+            # Mask hidden-to-output weights (zero columns for pruned units)
+            rnn.fc.weight.data[:, ~mask_tensor] = 0
     
-    elif isinstance(rnn, (SimpleLSTM, SimpleGRU)):
-        # For LSTM/GRU, need to handle gate-wise weights
-        # This is more complex - simplified version
+    elif isinstance(rnn, SimpleLSTM):
         with torch.no_grad():
-            if isinstance(rnn, SimpleLSTM):
-                layer = rnn.lstm
-            else:
-                layer = rnn.gru
+            # LSTM has 4 gates: input, forget, cell, output
+            # weight_ih_l0: (4*hidden_size, input_size)
+            # weight_hh_l0: (4*hidden_size, hidden_size)
+            hidden_size = rnn.hidden_size
             
-            # Get indices of units to keep
-            keep_indices = torch.where(mask)[0]
+            # For each gate, mask the corresponding rows
+            for gate in range(4):
+                gate_start = gate * hidden_size
+                gate_end = (gate + 1) * hidden_size
+                gate_mask = mask_tensor
+                
+                # Mask input-to-hidden for this gate
+                rnn.lstm.weight_ih_l0.data[gate_start:gate_end][~gate_mask, :] = 0
+                
+                # Mask hidden-to-hidden for this gate (rows and columns)
+                rnn.lstm.weight_hh_l0.data[gate_start:gate_end][~gate_mask, :] = 0
+                rnn.lstm.weight_hh_l0.data[gate_start:gate_end][:, ~gate_mask] = 0
+                
+                # Mask biases
+                if hasattr(rnn.lstm, 'bias_ih_l0') and rnn.lstm.bias_ih_l0 is not None:
+                    rnn.lstm.bias_ih_l0.data[gate_start:gate_end][~gate_mask] = 0
+                    rnn.lstm.bias_hh_l0.data[gate_start:gate_end][~gate_mask] = 0
             
-            # This is a simplified pruning - just zero the weights
-            # Full implementation would properly remove units
-            for param_name in ['weight_hh_l0']:
-                if hasattr(layer, param_name):
-                    param = getattr(layer, param_name)
-                    # Zero rows for pruned units (approximate)
-                    for i, keep in enumerate(mask):
-                        if not keep:
-                            # Zero out contributions from this unit
-                            param.data[:, i] = 0
+            # Mask hidden-to-output
+            rnn.fc.weight.data[:, ~mask_tensor] = 0
+    
+    elif isinstance(rnn, SimpleGRU):
+        with torch.no_grad():
+            # GRU has 3 gates: reset, update, new
+            # weight_ih_l0: (3*hidden_size, input_size)
+            # weight_hh_l0: (3*hidden_size, hidden_size)
+            hidden_size = rnn.hidden_size
             
-            # Hidden to output
-            rnn.fc.weight.data *= mask.unsqueeze(0)
+            # For each gate, mask the corresponding rows
+            for gate in range(3):
+                gate_start = gate * hidden_size
+                gate_end = (gate + 1) * hidden_size
+                gate_mask = mask_tensor
+                
+                # Mask input-to-hidden for this gate
+                rnn.gru.weight_ih_l0.data[gate_start:gate_end][~gate_mask, :] = 0
+                
+                # Mask hidden-to-hidden for this gate (rows and columns)
+                rnn.gru.weight_hh_l0.data[gate_start:gate_end][~gate_mask, :] = 0
+                rnn.gru.weight_hh_l0.data[gate_start:gate_end][:, ~gate_mask] = 0
+                
+                # Mask biases
+                if hasattr(rnn.gru, 'bias_ih_l0') and rnn.gru.bias_ih_l0 is not None:
+                    rnn.gru.bias_ih_l0.data[gate_start:gate_end][~gate_mask] = 0
+                    rnn.gru.bias_hh_l0.data[gate_start:gate_end][~gate_mask] = 0
+            
+            # Mask hidden-to-output
+            rnn.fc.weight.data[:, ~mask_tensor] = 0
     
     return rnn
 
@@ -205,6 +242,7 @@ def test_type_specific_pruning(task_name='flipflop', architecture='vanilla',
 def test_progressive_pruning(task_name='flipflop', architecture='vanilla',
                               hidden_size=128, n_epochs=2000,
                               prune_percentages=[10, 20, 30, 40, 50],
+                              finetune_epochs=200, n_eval_trials=10,
                               verbose=True):
     """
     Progressively prune weakest units and measure accuracy.
@@ -220,6 +258,8 @@ def test_progressive_pruning(task_name='flipflop', architecture='vanilla',
         hidden_size: Number of hidden units
         n_epochs: Training epochs
         prune_percentages: List of pruning percentages to test
+        finetune_epochs: Epochs for fine-tuning after pruning
+        n_eval_trials: Number of trials for accuracy evaluation
         verbose: Print progress
     
     Returns:
@@ -284,24 +324,53 @@ def test_progressive_pruning(task_name='flipflop', architecture='vanilla',
             mask = np.ones(hidden_size, dtype=bool)
             mask[prune_indices] = False
             
-            #Create fresh RNN and reload weights
+            # Create fresh RNN and reload weights
             rnn_pruned = arch_map[architecture](task.input_size, hidden_size, task.output_size)
             rnn_pruned.load_state_dict(rnn.state_dict())
             
             # Apply mask
             rnn_pruned = apply_unit_mask(rnn_pruned, mask)
             
-            # Test accuracy
-            inputs, targets = task.generate_trial(batch_size=32)
-            with torch.no_grad():
-                outputs = rnn_pruned(inputs, return_hidden_states=False)
-            accuracy = task._compute_accuracy(outputs, targets)
+            # Evaluate accuracy over multiple trials (more reliable)
+            accuracies = []
+            for _ in range(n_eval_trials):
+                inputs, targets = task.generate_trial(batch_size=32)
+                with torch.no_grad():
+                    outputs = rnn_pruned(inputs, return_hidden_states=False)
+                acc = task._compute_accuracy(outputs, targets)
+                accuracies.append(acc)
             
-            results[strategy][str(prune_pct)] = accuracy
+            immediate_accuracy = np.mean(accuracies)
+            
+            # Fine-tune to measure recovery
+            if finetune_epochs > 0:
+                rnn_pruned, _ = task.train_rnn(
+                    rnn_pruned, n_epochs=finetune_epochs, lr=0.0001,
+                    trial_length=100, verbose=False
+                )
+                
+                # Re-evaluate after fine-tuning
+                accuracies = []
+                for _ in range(n_eval_trials):
+                    inputs, targets = task.generate_trial(batch_size=32)
+                    with torch.no_grad():
+                        outputs = rnn_pruned(inputs, return_hidden_states=False)
+                    acc = task._compute_accuracy(outputs, targets)
+                    accuracies.append(acc)
+                
+                final_accuracy = np.mean(accuracies)
+            else:
+                final_accuracy = immediate_accuracy
+            
+            results[strategy][str(prune_pct)] = final_accuracy
             
             if verbose:
-                drop = baseline_accuracy - accuracy
-                print(f"  {strategy:12s}: {accuracy:.2%} (drop: {drop:.2%})")
+                drop = baseline_accuracy - final_accuracy
+                if finetune_epochs > 0:
+                    recovery = final_accuracy - immediate_accuracy
+                    print(f"  {strategy:12s}: {final_accuracy:.2%} (drop: {drop:.2%}, recovery: {recovery:+.2%})")
+                else:
+                    print(f"  {strategy:12s}: {final_accuracy:.2%} (drop: {drop:.2%})")
     
     return results
 
@@ -333,6 +402,8 @@ def main():
         hidden_size=128,
         n_epochs=2000,
         prune_percentages=[10, 20, 30, 40, 50],
+        finetune_epochs=200,
+        n_eval_trials=10,
         verbose=True
     )
     
