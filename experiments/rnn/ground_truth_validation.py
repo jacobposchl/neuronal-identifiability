@@ -38,13 +38,16 @@ def test_synthetic_recovery(task_name='context', n_epochs=1000, hidden_size=100,
     Protocol:
     1. Generate synthetic RNN with ground truth labels
     2. Verify spectral properties match expected types
-    3. Train on continuous-dynamics task
+    3. Extract trajectories using random inputs (UNTRAINED network)
     4. Apply deformation classification
     5. Compare to ground truth using ARI, NMI, confusion matrix
     
+    CRITICAL: Tests UNTRAINED synthetic RNN to preserve eigenvalue structure.
+    Training would destroy carefully constructed spectral properties.
+    
     Args:
-        task_name: Task to train on ('context', 'flipflop', 'cycling')
-        n_epochs: Training epochs
+        task_name: Task context (used for input/output dimensions only, NOT trained)
+        n_epochs: (Unused, kept for backward compatibility)
         hidden_size: Total hidden units
         n_integrators: Number of integrator units in ground truth
         n_rotators: Number of rotator units in ground truth
@@ -77,23 +80,31 @@ def test_synthetic_recovery(task_name='context', n_epochs=1000, hidden_size=100,
     # 3. Verify spectral properties
     spectral_report = verify_spectral_properties(rnn, ground_truth_labels)
     
-    # 4. Train RNN on task
+    # 4. Extract trajectories from UNTRAINED synthetic RNN
+    # CRITICAL: Do NOT train - training destroys eigenvalue structure!
+    # Instead, run random inputs to generate trajectories that reflect intrinsic dynamics
     if verbose:
-        print(f"\nTraining synthetic RNN on {task_name}...")
-        print(f"  Epochs: {n_epochs}")
+        print(f"\nExtracting trajectories from UNTRAINED synthetic RNN...")
+        print(f"  (Testing intrinsic dynamics, not task-trained behavior)")
     
-    rnn, history = task.train_rnn(rnn, n_epochs=n_epochs, lr=0.001, 
-                                   batch_size=32, verbose=verbose)
+    # Generate random input sequences
+    n_trials = 50
+    trial_length = 200
+    hidden_states_list = []
     
-    final_accuracy = history['accuracy'][-1]
-    if verbose:
-        print(f"  Final accuracy: {final_accuracy:.2f}%")
+    with torch.no_grad():
+        for trial in range(n_trials):
+            # Random inputs (batch_size=1, seq_len=trial_length, input_dim)
+            inputs = torch.randn(1, trial_length, task.input_size) * 0.5
+            
+            # Forward pass
+            outputs, hidden = rnn(inputs, return_hidden_states=True)
+            
+            # hidden shape: (1, seq_len, hidden_size) -> (hidden_size, seq_len)
+            hidden_states_list.append(hidden.squeeze(0).T.cpu().numpy())
     
-    # 5. Extract deformation features
-    if verbose:
-        print(f"\nExtracting trajectories...")
-    
-    hidden_states, _, _ = task.extract_trajectories(rnn, n_trials=50, trial_length=200)
+    # Concatenate all trials: (hidden_size, n_trials * trial_length)
+    hidden_states = np.concatenate(hidden_states_list, axis=1)
     
     if verbose:
         print(f"  Hidden states shape: {hidden_states.shape}")
@@ -128,7 +139,7 @@ def test_synthetic_recovery(task_name='context', n_epochs=1000, hidden_size=100,
         print(f"    Contraction: [{np.min(contraction_traj):.3f}, {np.max(contraction_traj):.3f}]")
         print(f"    Expansion:   [{np.min(expansion_traj):.3f}, {np.max(expansion_traj):.3f}]")
     
-    # 6. Extract features and classify
+    # 5. Extract features and classify
     if verbose:
         print(f"\nExtracting unit features...")
     
@@ -144,7 +155,7 @@ def test_synthetic_recovery(task_name='context', n_epochs=1000, hidden_size=100,
         print(f"  Mean expansion ratio: {np.mean(features[:, 2]):.3f}")
         print(f"  (Ratios normalized to sum=1, uniform would be 0.333)")
     
-    # 7. Cluster units
+    # 6. Cluster units
     n_clusters = 4  # Integrator, Rotator, Explorer, Mixed
     predicted_labels, details = classify_units(features, n_clusters=n_clusters, 
                                                method='kmeans', return_details=True)
@@ -156,7 +167,7 @@ def test_synthetic_recovery(task_name='context', n_epochs=1000, hidden_size=100,
         print(f"  Silhouette score: {details['silhouette']:.3f}")
         print_cluster_summary(interpretation)
     
-    # 8. Compare to ground truth
+    # 7. Compare to ground truth
     ari = adjusted_rand_score(ground_truth_labels, predicted_labels)
     nmi = normalized_mutual_info_score(ground_truth_labels, predicted_labels)
     
@@ -179,7 +190,7 @@ def test_synthetic_recovery(task_name='context', n_epochs=1000, hidden_size=100,
                 print(f"{name:15} {row}")
         print("="*70)
     
-    # 9. Spectral validation
+    # 8. Spectral validation
     if verbose:
         print(f"\nSpectral validation...")
     
@@ -192,7 +203,7 @@ def test_synthetic_recovery(task_name='context', n_epochs=1000, hidden_size=100,
     if verbose:
         print_spectral_comparison(spectral_comparison, gt_label_names)
     
-    # 10. Generate visualizations
+    # 9. Generate visualizations
     ensure_dirs('results/ground_truth_figures')
     
     # Eigenvalue spectrum plot
@@ -246,7 +257,6 @@ def test_synthetic_recovery(task_name='context', n_epochs=1000, hidden_size=100,
     results = {
         'task': task_name,
         'deformation_valid': True,
-        'final_accuracy': final_accuracy,
         'ground_truth_labels': ground_truth_labels,
         'predicted_labels': predicted_labels,
         'ari': ari,
@@ -266,12 +276,12 @@ def run_multi_task_validation(tasks=['context', 'flipflop', 'cycling'],
     """
     Run ground truth validation across multiple tasks.
     
-    Tests hypothesis: Deformation method works on continuous tasks,
-    struggles on discrete tasks.
+    Tests hypothesis: Deformation method can recover eigenvalue-based unit types
+    from synthetic RNNs with known spectral properties (tested on UNTRAINED networks).
     
     Args:
-        tasks: List of task names
-        n_epochs: Training epochs
+        tasks: List of task names (used for input/output dimensions only)
+        n_epochs: (Unused, kept for backward compatibility)
         hidden_size: RNN hidden size
         verbose: Print output
     
@@ -312,15 +322,15 @@ def run_multi_task_validation(tasks=['context', 'flipflop', 'cycling'],
         
         # Interpretation
         print(f"\nInterpretation:")
-        continuous_tasks = [t for t in tasks if all_results[t]['deformation_valid'] 
+        successful_tasks = [t for t in tasks if all_results[t]['deformation_valid'] 
                            and all_results[t]['ari'] > 0.5]
-        if continuous_tasks:
-            print(f"  ✓ Method succeeds on continuous tasks: {', '.join(continuous_tasks)}")
+        if successful_tasks:
+            print(f"  ✓ Method succeeds on: {', '.join(successful_tasks)}")
         
-        discrete_tasks = [t for t in tasks if not all_results[t]['deformation_valid'] 
+        failed_tasks = [t for t in tasks if not all_results[t]['deformation_valid'] 
                          or all_results[t]['ari'] < 0.3]
-        if discrete_tasks:
-            print(f"  ✗ Method struggles on discrete tasks: {', '.join(discrete_tasks)}")
+        if failed_tasks:
+            print(f"  ✗ Method struggles on: {', '.join(failed_tasks)}")
     
     return all_results
 
@@ -333,7 +343,7 @@ if __name__ == '__main__':
     parser.add_argument('--multi-task', action='store_true',
                        help='Run multi-task validation (same as --task all)')
     parser.add_argument('--epochs', type=int, default=1000,
-                       help='Training epochs (default: 1000)')
+                       help='(Unused, kept for backward compatibility)')
     parser.add_argument('--hidden-size', type=int, default=100,
                        help='Hidden units (default: 100)')
     parser.add_argument('--n-integrators', type=int, default=30,

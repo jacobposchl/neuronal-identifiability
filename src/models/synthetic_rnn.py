@@ -17,7 +17,7 @@ def generate_integrator_weights(input_dim, hidden_dim, n_integrators, start_idx=
     Generate weights for integrator units (line attractors).
     
     Integrator units maintain information over time via eigenvalues near 1.
-    Implemented via: h_t = (1-α)h_{t-1} + α·input, where α is small.
+    Uses spectral construction: A = VΛV^{-1} to guarantee eigenvalues.
     
     CRITICAL: Only couples within integrator block to maintain block-diagonal structure.
     
@@ -33,16 +33,21 @@ def generate_integrator_weights(input_dim, hidden_dim, n_integrators, start_idx=
         Why_integrator: (n_integrators, input_dim) input weight matrix  
         bias_integrator: (n_integrators,) bias vector
     """
-    # Recurrent weights: near-identity for self-connection
+    # Construct matrix with eigenvalues near 1 using spectral decomposition
+    # Target eigenvalues: real, near 1 (between 0.95 and 1.0)
+    eigenvalues = np.random.uniform(0.95, 1.0, n_integrators)
+    
+    # Random orthogonal eigenvector matrix
+    V = np.linalg.qr(np.random.randn(n_integrators, n_integrators))[0]
+    
+    # Construct block weight matrix: A = V * diag(eigenvalues) * V^T
+    Whh_block = V @ np.diag(eigenvalues) @ V.T
+    
+    # Embed in full-size weight matrix (zeros outside block)
     Whh = np.zeros((n_integrators, hidden_dim))
     for i in range(n_integrators):
-        unit_idx = start_idx + i
-        Whh[i, unit_idx] = 0.98  # Eigenvalue near 1 (stable integrator)
-        
-        # Small random coupling ONLY within integrator block
         for j in range(n_integrators):
-            if i != j:
-                Whh[i, start_idx + j] += np.random.randn() * 0.05
+            Whh[i, start_idx + j] = Whh_block[i, j]
     
     # Input weights: random projection
     Why = np.random.randn(n_integrators, input_dim) * 0.3
@@ -121,6 +126,7 @@ def generate_explorer_weights(input_dim, hidden_dim, n_explorers, start_idx=0, e
     
     Explorer units have eigenvalues >1, causing expansion unless constrained
     by nonlinearity (tanh saturation).
+    Uses spectral construction: A = VΛV^{-1} to guarantee eigenvalues.
     
     CRITICAL: Only couples within explorer block to maintain block-diagonal structure.
     
@@ -136,17 +142,21 @@ def generate_explorer_weights(input_dim, hidden_dim, n_explorers, start_idx=0, e
         Why_explorer: (n_explorers, input_dim) input weight matrix
         bias_explorer: (n_explorers,) bias vector
     """
-    Whh = np.zeros((n_explorers, hidden_dim))
+    # Construct matrix with eigenvalues > 1 using spectral decomposition
+    # Target eigenvalues: real, > 1 (between 1.05 and 1.2)
+    eigenvalues = np.random.uniform(1.05, 1.2, n_explorers)
     
+    # Random orthogonal eigenvector matrix
+    V = np.linalg.qr(np.random.randn(n_explorers, n_explorers))[0]
+    
+    # Construct block weight matrix: A = V * diag(eigenvalues) * V^T
+    Whh_block = V @ np.diag(eigenvalues) @ V.T
+    
+    # Embed in full-size weight matrix (zeros outside block)
+    Whh = np.zeros((n_explorers, hidden_dim))
     for i in range(n_explorers):
-        unit_idx = start_idx + i
-        # Self-connection with expansion
-        Whh[i, unit_idx] = expansion_rate + np.random.randn() * 0.05
-        
-        # Random couplings ONLY within explorer block
         for j in range(n_explorers):
-            if i != j:
-                Whh[i, start_idx + j] += np.random.randn() * 0.05
+            Whh[i, start_idx + j] = Whh_block[i, j]
     
     # Strong input weights (explorers respond to inputs)
     Why = np.random.randn(n_explorers, input_dim) * 0.5
@@ -161,7 +171,8 @@ def generate_mixed_weights(input_dim, hidden_dim, n_mixed, start_idx=0):
     """
     Generate weights for mixed/generic units.
     
-    Standard random initialization without specific spectral properties.
+    Mixed units have eigenvalues scattered around 1 (mixture of behaviors).
+    Uses spectral construction: A = VΛV^{-1} with mixed eigenvalue types.
     
     CRITICAL: Only couples within mixed block to maintain block-diagonal structure.
     
@@ -176,11 +187,21 @@ def generate_mixed_weights(input_dim, hidden_dim, n_mixed, start_idx=0):
         Why_mixed: (n_mixed, input_dim) input weight matrix
         bias_mixed: (n_mixed,) bias vector
     """
-    # Random initialization ONLY within mixed block
+    # Construct matrix with mixed eigenvalues using spectral decomposition
+    # Eigenvalues scattered around 1: some <1, some ≈1, some >1
+    eigenvalues = np.random.uniform(0.8, 1.15, n_mixed)
+    
+    # Random orthogonal eigenvector matrix
+    V = np.linalg.qr(np.random.randn(n_mixed, n_mixed))[0]
+    
+    # Construct block weight matrix: A = V * diag(eigenvalues) * V^T
+    Whh_block = V @ np.diag(eigenvalues) @ V.T
+    
+    # Embed in full-size weight matrix (zeros outside block)
     Whh = np.zeros((n_mixed, hidden_dim))
     for i in range(n_mixed):
         for j in range(n_mixed):
-            Whh[i, start_idx + j] = np.random.randn() * 0.5 / np.sqrt(n_mixed)
+            Whh[i, start_idx + j] = Whh_block[i, j]
     
     # Random input weights
     Why = np.random.randn(n_mixed, input_dim) * 0.3
