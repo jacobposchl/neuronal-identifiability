@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 
 # Add project root to path
-project_root = Path(__file__).parent.parent
+project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 print("\n" + "="*70)
@@ -126,12 +126,13 @@ try:
     baseline_comparison = compare_to_baseline(features, labels, hidden_states)
     
     print(f"  Silhouette scores:")
-    print(f"    Deformation: {baseline_comparison['deformation']:.3f}")
-    print(f"    PCA:         {baseline_comparison['pca']:.3f}")
-    print(f"    Raw:         {baseline_comparison['raw']:.3f}")
+    print(f"    Deformation: {baseline_comparison['deformation']['silhouette']:.3f}")
+    print(f"    PCA:         {baseline_comparison['pca']['silhouette']:.3f}")
+    print(f"    Raw:         {baseline_comparison['raw']['silhouette']:.3f}")
     
-    improvement_pca = (baseline_comparison['deformation'] - baseline_comparison['pca']) / \
-                     (baseline_comparison['pca'] + 1e-10) * 100
+    deformation_score = baseline_comparison['deformation']['silhouette']
+    pca_score = baseline_comparison['pca']['silhouette']
+    improvement_pca = (deformation_score - pca_score) / (pca_score + 1e-10) * 100
     print(f"  ✓ Improvement over PCA: {improvement_pca:+.1f}%")
     
 except Exception as e:

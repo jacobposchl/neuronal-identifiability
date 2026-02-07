@@ -6,10 +6,16 @@ This provides direct validation that the method can recover ground truth functio
 roles when dynamics match theoretical assumptions.
 """
 
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import argparse
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score, confusion_matrix
+
+# Add project root to path
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
 
 from src.models.synthetic_rnn import build_synthetic_rnn, verify_spectral_properties
 from src.tasks import get_task
