@@ -18,7 +18,7 @@ sys.path.insert(0, str(project_root))
 
 from src.models.rnn_models import VanillaRNN
 from src.tasks import get_task
-from src.core.deformation_utils import estimate_deformation_from_rnn
+from src.core.deformation_utils import estimate_deformation_from_rnn, smooth_deformation_signals
 from src.analysis.rnn_features import (extract_rnn_unit_features, classify_units, 
                                interpret_clusters, select_features_by_task_dynamics)
 from src.analysis.perturbation import (test_unit_importance, cross_task_transfer,
@@ -58,12 +58,15 @@ def run_importance_analysis(task_name='context', hidden_size=128,
     hidden_states, inputs, outputs = task.extract_trajectories(rnn, n_trials=50)
     
     # Estimate deformation
-    rotation, contraction, expansion = estimate_deformation_from_rnn(
-        rnn, inputs, hidden_states, smoothing_window=5)
+    rotation, contraction, expansion, _ = estimate_deformation_from_rnn(hidden_states)
+    rotation, contraction, expansion = smooth_deformation_signals(rotation, contraction, expansion, sigma=5)
+    
+    # Extract deformation features
+    deformation_features = extract_rnn_unit_features(hidden_states, rotation, contraction, expansion)
     
     # Select features by task dynamics
-    features = select_features_by_task_dynamics(
-        rotation, contraction, expansion, task_name, hidden_states, verbose=False)
+    features, method_used = select_features_by_task_dynamics(
+        hidden_states, deformation_features, task_dynamics='unknown', deformation_valid=True)
     
     if features is None:
         print("\n❌ Task has discrete dynamics - deformation method failed")
@@ -71,8 +74,9 @@ def run_importance_analysis(task_name='context', hidden_size=128,
         return None
     
     # Cluster units
-    unit_labels, cluster_centers = classify_units(features, n_clusters=4)
-    interpretation = interpret_clusters(cluster_centers, feature_type='deformation')
+    unit_labels, details = classify_units(features, n_clusters=4, return_details=True)
+    cluster_centers = details['centers']
+    interpretation = interpret_clusters(features, unit_labels, feature_type='deformation')
     
     # 3. Test importance via ablation
     importance_results = test_unit_importance(
@@ -113,18 +117,20 @@ def run_transfer_analysis(task_a='context', task_b='parametric',
     print(f"\nClassifying units based on {task_a} dynamics...")
     hidden_states_a, inputs_a, _ = task_obj_a.extract_trajectories(rnn_a, n_trials=50)
     
-    rotation_a, contraction_a, expansion_a = estimate_deformation_from_rnn(
-        rnn_a, inputs_a, hidden_states_a, smoothing_window=5)
+    rotation_a, contraction_a, expansion_a, _ = estimate_deformation_from_rnn(hidden_states_a)
+    rotation_a, contraction_a, expansion_a = smooth_deformation_signals(rotation_a, contraction_a, expansion_a, sigma=5)
     
-    features_a = select_features_by_task_dynamics(
-        rotation_a, contraction_a, expansion_a, task_a, hidden_states_a, verbose=False)
+    deformation_features_a = extract_rnn_unit_features(hidden_states_a, rotation_a, contraction_a, expansion_a)
+    features_a, _ = select_features_by_task_dynamics(
+        hidden_states_a, deformation_features_a, task_dynamics='unknown', deformation_valid=True)
     
     if features_a is None:
         print(f"\n❌ {task_a} has discrete dynamics - cannot classify units")
         return None
     
-    unit_labels_a, cluster_centers_a = classify_units(features_a, n_clusters=4)
-    interpretation_a = interpret_clusters(cluster_centers_a, feature_type='deformation')
+    unit_labels_a, details_a = classify_units(features_a, n_clusters=4, return_details=True)
+    cluster_centers_a = details_a['centers']
+    interpretation_a = interpret_clusters(features_a, unit_labels_a, feature_type='deformation')
     
     # 3. Test transfer to Task B
     task_obj_b = get_task(task_b)
@@ -167,18 +173,20 @@ def run_progressive_ablation_experiment(task_name='context', hidden_size=128,
     print("\nClassifying units...")
     hidden_states, inputs, _ = task.extract_trajectories(rnn, n_trials=50)
     
-    rotation, contraction, expansion = estimate_deformation_from_rnn(
-        rnn, inputs, hidden_states, smoothing_window=5)
+    rotation, contraction, expansion, _ = estimate_deformation_from_rnn(hidden_states)
+    rotation, contraction, expansion = smooth_deformation_signals(rotation, contraction, expansion, sigma=5)
     
-    features = select_features_by_task_dynamics(
-        rotation, contraction, expansion, task_name, hidden_states, verbose=False)
+    deformation_features = extract_rnn_unit_features(hidden_states, rotation, contraction, expansion)
+    features, _ = select_features_by_task_dynamics(
+        hidden_states, deformation_features, task_dynamics='unknown', deformation_valid=True)
     
     if features is None:
         print("\n❌ Discrete dynamics - cannot perform progressive ablation")
         return None
     
-    unit_labels, cluster_centers = classify_units(features, n_clusters=4)
-    interpretation = interpret_clusters(cluster_centers, feature_type='deformation')
+    unit_labels, details = classify_units(features, n_clusters=4, return_details=True)
+    cluster_centers = details['centers']
+    interpretation = interpret_clusters(features, unit_labels, feature_type='deformation')
     
     # 2. Progressive ablation - multiple strategies
     strategies = ['low_confidence_first', 'high_confidence_first', 'random']
@@ -246,18 +254,20 @@ def run_compression_experiment(task_name='context', hidden_size=128,
     print("\nClassifying units...")
     hidden_states, inputs, _ = task.extract_trajectories(rnn, n_trials=50)
     
-    rotation, contraction, expansion = estimate_deformation_from_rnn(
-        rnn, inputs, hidden_states, smoothing_window=5)
+    rotation, contraction, expansion, _ = estimate_deformation_from_rnn(hidden_states)
+    rotation, contraction, expansion = smooth_deformation_signals(rotation, contraction, expansion, sigma=5)
     
-    features = select_features_by_task_dynamics(
-        rotation, contraction, expansion, task_name, hidden_states, verbose=False)
+    deformation_features = extract_rnn_unit_features(hidden_states, rotation, contraction, expansion)
+    features, _ = select_features_by_task_dynamics(
+        hidden_states, deformation_features, task_dynamics='unknown', deformation_valid=True)
     
     if features is None:
         print("\n❌ Discrete dynamics - cannot perform compression")
         return None
     
-    unit_labels, cluster_centers = classify_units(features, n_clusters=4)
-    interpretation = interpret_clusters(cluster_centers, feature_type='deformation')
+    unit_labels, details = classify_units(features, n_clusters=4, return_details=True)
+    cluster_centers = details['centers']
+    interpretation = interpret_clusters(features, unit_labels, feature_type='deformation')
     
     # 2. Test multiple compression ratios
     compression_results = []
@@ -343,18 +353,20 @@ def run_multi_task_importance(task_names=['context', 'parametric', 'flipflop'],
     print(f"\nClassifying units based on {primary_task_name}...")
     hidden_states, inputs, _ = primary_task.extract_trajectories(rnn, n_trials=50)
     
-    rotation, contraction, expansion = estimate_deformation_from_rnn(
-        rnn, inputs, hidden_states, smoothing_window=5)
+    rotation, contraction, expansion, _ = estimate_deformation_from_rnn(hidden_states)
+    rotation, contraction, expansion = smooth_deformation_signals(rotation, contraction, expansion, sigma=5)
     
-    features = select_features_by_task_dynamics(
-        rotation, contraction, expansion, primary_task_name, hidden_states, verbose=False)
+    deformation_features = extract_rnn_unit_features(hidden_states, rotation, contraction, expansion)
+    features, _ = select_features_by_task_dynamics(
+        hidden_states, deformation_features, task_dynamics='unknown', deformation_valid=True)
     
     if features is None:
         print(f"\n❌ {primary_task_name} has discrete dynamics")
         return None
     
-    unit_labels, cluster_centers = classify_units(features, n_clusters=4)
-    interpretation = interpret_clusters(cluster_centers, feature_type='deformation')
+    unit_labels, details = classify_units(features, n_clusters=4, return_details=True)
+    cluster_centers = details['centers']
+    interpretation = interpret_clusters(features, unit_labels, feature_type='deformation')
     
     # 3. Create task objects
     tasks = [get_task(name) for name in task_names]

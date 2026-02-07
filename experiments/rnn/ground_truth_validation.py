@@ -82,8 +82,8 @@ def test_synthetic_recovery(task_name='context', n_epochs=1000, hidden_size=100,
         print(f"\nTraining synthetic RNN on {task_name}...")
         print(f"  Epochs: {n_epochs}")
     
-    history = task.train_rnn(rnn, n_epochs=n_epochs, learning_rate=0.001, 
-                            batch_size=32, verbose=verbose)
+    rnn, history = task.train_rnn(rnn, n_epochs=n_epochs, lr=0.001, 
+                                   batch_size=32, verbose=verbose)
     
     final_accuracy = history['accuracy'][-1]
     if verbose:
@@ -93,7 +93,7 @@ def test_synthetic_recovery(task_name='context', n_epochs=1000, hidden_size=100,
     if verbose:
         print(f"\nExtracting trajectories...")
     
-    hidden_states, _ = task.extract_trajectories(rnn, n_trials=50, trial_length=200)
+    hidden_states, _, _ = task.extract_trajectories(rnn, n_trials=50, trial_length=200)
     
     if verbose:
         print(f"  Hidden states shape: {hidden_states.shape}")
@@ -329,6 +329,8 @@ if __name__ == '__main__':
     parser.add_argument('--task', type=str, default='context',
                        choices=['context', 'flipflop', 'cycling', 'all'],
                        help='Task to test (default: context)')
+    parser.add_argument('--multi-task', action='store_true',
+                       help='Run multi-task validation (same as --task all)')
     parser.add_argument('--epochs', type=int, default=1000,
                        help='Training epochs (default: 1000)')
     parser.add_argument('--hidden-size', type=int, default=100,
@@ -348,7 +350,8 @@ if __name__ == '__main__':
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     
-    if args.task == 'all':
+    # Handle multi-task flag
+    if args.multi_task or args.task == 'all':
         # Multi-task validation
         results = run_multi_task_validation(
             tasks=['context', 'flipflop', 'cycling'],

@@ -147,7 +147,7 @@ def evaluate_rnn_performance(rnn, task, n_trials=50):
             inputs, targets = task.generate_trial(length=200, batch_size=1)
             
             # Forward pass
-            outputs = rnn(inputs)
+            outputs = rnn(inputs, return_hidden_states=False)
             
             # Compute accuracy
             accuracy = task._compute_accuracy(outputs, targets)
@@ -198,7 +198,7 @@ def cross_task_transfer(rnn_task_a, task_a, task_b, unit_labels, interpretation,
     if verbose:
         print(f"\nTraining on Task B...")
     
-    task_b.train_rnn(rnn_task_b, n_epochs=1000, verbose=False)
+    rnn_task_b, _ = task_b.train_rnn(rnn_task_b, n_epochs=1000, verbose=False)
     
     # Baseline performance on Task B
     baseline_b = evaluate_rnn_performance(rnn_task_b, task_b, n_test_trials)
