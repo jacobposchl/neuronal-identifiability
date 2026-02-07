@@ -237,9 +237,11 @@ def build_synthetic_rnn(input_dim, hidden_size, output_dim,
     rnn = VanillaRNN(input_dim, hidden_size, output_dim)
     
     # Convert to torch and assign
+    # PyTorch RNN weights: weight_ih_l0 is (hidden_size, input_size)
+    #                      weight_hh_l0 is (hidden_size, hidden_size)
     with torch.no_grad():
-        rnn.rnn.weight_hh_l0.copy_(torch.from_numpy(Whh.T).float())  # PyTorch uses transposed
-        rnn.rnn.weight_ih_l0.copy_(torch.from_numpy(Why.T).float())
+        rnn.rnn.weight_hh_l0.copy_(torch.from_numpy(Whh).float())
+        rnn.rnn.weight_ih_l0.copy_(torch.from_numpy(Why).float())
         rnn.rnn.bias_hh_l0.copy_(torch.from_numpy(bias_h).float())
         # Keep default bias_ih
     
