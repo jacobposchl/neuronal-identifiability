@@ -497,4 +497,63 @@ def select_features_by_task_dynamics(hidden_states, deformation_features,
     Returns:
         features: (n_units, n_features) selected feature array
         method_used: str - name of method used
-    \"\"\"\n    from sklearn.decomposition import PCA\n    \n    n_units = hidden_states.shape[0]\n    \n    if task_dynamics == 'static' or task_dynamics == 'discrete':\n        # For memory/discrete tasks: use PCA (captures state structure)\n        print(\"  Using PCA features (static/discrete dynamics)\")\n        pca = PCA(n_components=min(10, n_units))\n        pca_features = pca.fit_transform(hidden_states)\n        return pca_features, 'pca'\n    \n    elif task_dynamics == 'oscillatory':\n        if deformation_valid and deformation_features is not None:\n            # Try deformation first for oscillatory tasks\n            print(\"  Using deformation features (oscillatory dynamics)\")\n            return deformation_features, 'deformation'\n        else:\n            # Fallback to frequency domain\n            print(\"  Using frequency features (oscillatory dynamics, deformation failed)\")\n            from scipy.fft import fft\n            \n            freq_features = []\n            for unit in hidden_states:\n                fft_vals = np.abs(fft(unit))\n                freq_features.append(fft_vals[:50])  # Low frequencies\n            return np.array(freq_features), 'frequency'\n    \n    elif task_dynamics == 'mixed':\n        if deformation_valid and deformation_features is not None:\n            # Mixed tasks: use deformation\n            print(\"  Using deformation features (mixed dynamics)\")\n            return deformation_features, 'deformation'\n        else:\n            print(\"  Using PCA features (mixed dynamics, deformation failed)\")\n            pca = PCA(n_components=min(5, n_units))\n            return pca.fit_transform(hidden_states), 'pca'\n    \n    else:  # unknown\n        if deformation_valid and deformation_features is not None:\n            # Check signal strength\n            avg_corr = np.mean(np.abs(deformation_features))\n            if avg_corr > 0.05:\n                # Strong deformation signals\n                print(\"  Using deformation features (strong signals)\")\n                return deformation_features, 'deformation'\n            else:\n                # Weak signals - hybrid approach\n                print(\"  Using hybrid PCA+deformation features (weak deformation signals)\")\n                pca = PCA(n_components=3)\n                pca_features = pca.fit_transform(hidden_states)\n                \n                # Weight by correlation strength\n                hybrid = 0.3 * deformation_features + 0.7 * pca_features\n                return hybrid, 'hybrid'\n        else:\n            # Deformation failed - use PCA\n            print(\"  Using PCA features (deformation unavailable)\")\n            pca = PCA(n_components=min(5, n_units))\n            return pca.fit_transform(hidden_states), 'pca'
+    """
+    from sklearn.decomposition import PCA
+    
+    n_units = hidden_states.shape[0]
+    
+    if task_dynamics == 'static' or task_dynamics == 'discrete':
+        # For memory/discrete tasks: use PCA (captures state structure)
+        print("  Using PCA features (static/discrete dynamics)")
+        pca = PCA(n_components=min(10, n_units))
+        pca_features = pca.fit_transform(hidden_states)
+        return pca_features, 'pca'
+    
+    elif task_dynamics == 'oscillatory':
+        if deformation_valid and deformation_features is not None:
+            # Try deformation first for oscillatory tasks
+            print("  Using deformation features (oscillatory dynamics)")
+            return deformation_features, 'deformation'
+        else:
+            # Fallback to frequency domain
+            print("  Using frequency features (oscillatory dynamics, deformation failed)")
+            from scipy.fft import fft
+            
+            freq_features = []
+            for unit in hidden_states:
+                fft_vals = np.abs(fft(unit))
+                freq_features.append(fft_vals[:50])  # Low frequencies
+            return np.array(freq_features), 'frequency'
+    
+    elif task_dynamics == 'mixed':
+        if deformation_valid and deformation_features is not None:
+            # Mixed tasks: use deformation
+            print("  Using deformation features (mixed dynamics)")
+            return deformation_features, 'deformation'
+        else:
+            print("  Using PCA features (mixed dynamics, deformation failed)")
+            pca = PCA(n_components=min(5, n_units))
+            return pca.fit_transform(hidden_states), 'pca'
+    
+    else:  # unknown
+        if deformation_valid and deformation_features is not None:
+            # Check signal strength
+            avg_corr = np.mean(np.abs(deformation_features))
+            if avg_corr > 0.05:
+                # Strong deformation signals
+                print("  Using deformation features (strong signals)")
+                return deformation_features, 'deformation'
+            else:
+                # Weak signals - hybrid approach
+                print("  Using hybrid PCA+deformation features (weak deformation signals)")
+                pca = PCA(n_components=3)
+                pca_features = pca.fit_transform(hidden_states)
+                
+                # Weight by correlation strength
+                hybrid = 0.3 * deformation_features + 0.7 * pca_features
+                return hybrid, 'hybrid'
+        else:
+            # Deformation failed - use PCA
+            print("  Using PCA features (deformation unavailable)")
+            pca = PCA(n_components=min(5, n_units))
+            return pca.fit_transform(hidden_states), 'pca'
