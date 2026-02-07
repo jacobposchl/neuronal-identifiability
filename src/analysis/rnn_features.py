@@ -11,28 +11,29 @@ from scipy.ndimage import gaussian_filter1d
 
 def extract_rnn_unit_features(hidden_states, rotation_trajectory, 
                                contraction_trajectory, expansion_trajectory,
-                               smooth_sigma=5):
+                               smooth_sigma=5, use_abs=True, normalize=True):
     """
     Extract deformation-based features for RNN units.
     
     Computes correlation between each unit's activity and the three deformation
     modes (rotation, contraction, expansion) over time.
     
-    Adapted from features.py::extract_deformation_features() for RNN context:
-    - Input: continuous hidden states (not spike trains)
-    - No downsampling needed (RNN activations already smooth)
-    - Optional smoothing for noise reduction
-    - Direct correlation with deformation trajectories
+    Key improvements for ground truth recovery:
+    - use_abs=True: Uses absolute correlations (ignores polarity artifacts)
+    - normalize=True: Normalizes to sum=1 (ratio-based features)
     
     Args:
         hidden_states: (n_units, n_timesteps) RNN hidden unit activations
         rotation_trajectory: (n_timesteps,) rotation magnitude over time
         contraction_trajectory: (n_timesteps,) contraction magnitude over time
-        expansion_trajectory: (n_timesteps,) expansion magnitude over time
+        expansion_trajectory: (n_timesteps,) expansion trajectory over time
         smooth_sigma: Gaussian smoothing parameter (0 = no smoothing)
+        use_abs: If True, use absolute values of correlations (recommended)
+        normalize: If True, normalize features to sum=1 (recommended)
     
     Returns:
-        features: (n_units, 3) array where features[i] = [corr_rotation, corr_contraction, corr_expansion]
+        features: (n_units, 3) array where features[i] = [rotation, contraction, expansion]
+                  Values represent relative strength of correlation with each mode
     """
     n_units, n_timesteps = hidden_states.shape
     
@@ -77,6 +78,25 @@ def extract_rnn_unit_features(hidden_states, rotation_trajectory,
         corr_rotation = 0 if np.isnan(corr_rotation) else corr_rotation
         corr_contraction = 0 if np.isnan(corr_contraction) else corr_contraction
         corr_expansion = 0 if np.isnan(corr_expansion) else corr_expansion
+        
+        # Use absolute values to ignore polarity artifacts
+        if use_abs:
+            corr_rotation = abs(corr_rotation)
+            corr_contraction = abs(corr_contraction)
+            corr_expansion = abs(corr_expansion)
+        
+        # Normalize to ratio-based features (sum to 1)
+        if normalize:
+            total = corr_rotation + corr_contraction + corr_expansion
+            if total > 1e-10:  # Avoid division by zero
+                corr_rotation /= total
+                corr_contraction /= total
+                corr_expansion /= total
+            else:
+                # If all correlations are ~0, assign equal weight
+                corr_rotation = 1/3
+                corr_contraction = 1/3
+                corr_expansion = 1/3
         
         features.append([corr_rotation, corr_contraction, corr_expansion])
     
@@ -168,22 +188,30 @@ def classify_units(features, n_clusters=4, method='kmeans', return_details=False
 
 
 def interpret_clusters(features, labels, cluster_names=None, threshold=0.03, strict_threshold=0.10, 
-                       feature_type='deformation'):
+                       feature_type='deformation', normalized=True):
     """
     Interpret cluster assignments with 3-tier confidence classification.
     
-    Uses three confidence levels:
-    - Very Low (< threshold): 'Mixed' - too weak to classify
-    - Low (< strict_threshold): 'Type?' - weak signal, uncertain classification  
-    - High (>= strict_threshold): 'Type' - confident classification
+    Handles both raw correlation features and normalized ratio-based features.
+    
+    For normalized features (recommended):
+    - Features sum to 1 (ratio of correlation strengths)
+    - Threshold logic based on deviation from uniform (0.33, 0.33, 0.33)
+    - Dominant feature > 0.45 = high confidence
+    - Dominant feature > 0.38 = low confidence
+    - Otherwise = mixed
+    
+    For raw features (legacy):
+    - Uses absolute correlation thresholds (0.03, 0.10)
     
     Args:
         features: (n_units, 3) deformation feature array
         labels: (n_units,) cluster assignments
         cluster_names: Optional list of names (default: auto-assign based on features)
-        threshold: Minimum correlation to distinguish from Mixed (default: 0.03)
-        strict_threshold: Minimum for confident classification (default: 0.10)
+        threshold: For raw features - minimum correlation (default: 0.03)
+        strict_threshold: For raw features - minimum for confident classification (default: 0.10)
         feature_type: 'deformation' (default) or 'pca' - affects interpretation labels
+        normalized: If True, assumes features are normalized ratios (sum=1)
     
     Returns:
         interpretation: Dict mapping cluster ID to interpretation dict
@@ -197,8 +225,20 @@ def interpret_clusters(features, labels, cluster_names=None, threshold=0.03, str
     else:  # PCA or other
         feature_names = ['PC1', 'PC2', 'PC3']
         type_names = ['PC1-dominant', 'PC2-dominant', 'PC3-dominant']
-        # PCA features are on different scale - use percentile-based thresholds
-        # These will be overridden below to use relative strength
+    
+    # Adapt thresholds for normalized features
+    if normalized:
+        # For normalized features summing to 1:
+        # - Uniform distribution: (0.33, 0.33, 0.33)
+        # - Dominant feature > 0.45 means strong preference (high confidence)
+        # - Dominant feature > 0.38 means moderate preference (low confidence)
+        # - Otherwise mixed
+        weak_threshold = 0.38  # ~15% above uniform
+        strong_threshold = 0.45  # ~35% above uniform
+    else:
+        # Use original thresholds for raw correlations
+        weak_threshold = threshold
+        strong_threshold = strict_threshold
     
     for cluster_id in range(n_clusters):
         cluster_mask = labels == cluster_id
@@ -219,21 +259,26 @@ def interpret_clusters(features, labels, cluster_names=None, threshold=0.03, str
         cluster_features = features[cluster_mask]
         mean_features = np.mean(cluster_features, axis=0)
         
+        # For normalized features, already positive; for raw, use absolute
+        if normalized:
+            abs_features = mean_features  # Already positive
+        else:
+            abs_features = np.abs(mean_features)
+        
         # Determine dominant mode
-        abs_features = np.abs(mean_features)
         dominant_idx = np.argmax(abs_features)
         dominant_value = mean_features[dominant_idx]
         dominant_mode = feature_names[dominant_idx]
-        max_abs_corr = abs_features[dominant_idx]
+        max_value = abs_features[dominant_idx]
         
         # THREE-TIER CLASSIFICATION
         if cluster_names is None:
-            if max_abs_corr < threshold:
+            if max_value < weak_threshold:
                 # Very weak - Mixed type
                 name = 'Mixed'
                 confidence = 'very_low'
                 
-            elif max_abs_corr < strict_threshold:
+            elif max_value < strong_threshold:
                 # Weak signal - classify but flag uncertainty
                 name = type_names[dominant_idx] + '?'
                 confidence = 'low'
@@ -259,29 +304,35 @@ def interpret_clusters(features, labels, cluster_names=None, threshold=0.03, str
             'dominant_value': dominant_value,
             'percentage': 100 * n_units / len(labels),
             'confidence': confidence,
-            'max_correlation': max_abs_corr
+            'max_correlation': max_value
         }
     
     return interpretation
 
 
-def print_cluster_summary(interpretation, feature_type='deformation'):
+def print_cluster_summary(interpretation, feature_type='deformation', normalized=True):
     """
     Print human-readable summary of cluster interpretation.
     
     Args:
         interpretation: Dict from interpret_clusters()
         feature_type: 'deformation' or 'pca' - affects labels
+        normalized: If True, features are normalized ratios (sum=1)
     """
     print("\n" + "="*70)
     print("UNIT CLASSIFICATION SUMMARY")
     if feature_type != 'deformation':
         print(f"(Based on {feature_type.upper()} features - not deformation)")
+    if normalized:
+        print("(Features are normalized ratios - sum=1, uniform=0.333)")
     print("="*70)
     
     # Get feature labels
     if feature_type == 'deformation':
-        labels = ['rotation', 'contraction', 'expansion']
+        if normalized:
+            labels = ['rotation ratio', 'contraction ratio', 'expansion ratio']
+        else:
+            labels = ['rotation', 'contraction', 'expansion']
     else:
         labels = ['PC1', 'PC2', 'PC3']
     
@@ -289,12 +340,21 @@ def print_cluster_summary(interpretation, feature_type='deformation'):
         info = interpretation[cluster_id]
         
         print(f"\nCluster {cluster_id}: {info['name']} ({info['n_units']} units, {info['percentage']:.1f}%)")
-        print(f"  Mean correlation with {labels[0]:12s}: {info['mean_features'][0]:+.3f}")
-        print(f"  Mean correlation with {labels[1]:12s}: {info['mean_features'][1]:+.3f}")
-        print(f"  Mean correlation with {labels[2]:12s}: {info['mean_features'][2]:+.3f}")
+        if normalized:
+            print(f"  {labels[0]:20s}: {info['mean_features'][0]:.3f}")
+            print(f"  {labels[1]:20s}: {info['mean_features'][1]:.3f}")
+            print(f"  {labels[2]:20s}: {info['mean_features'][2]:.3f}")
+        else:
+            print(f"  Mean correlation with {labels[0]:12s}: {info['mean_features'][0]:+.3f}")
+            print(f"  Mean correlation with {labels[1]:12s}: {info['mean_features'][1]:+.3f}")
+            print(f"  Mean correlation with {labels[2]:12s}: {info['mean_features'][2]:+.3f}")
         
         if info['dominant_mode'] is not None:
-            print(f"  → Dominant mode: {info['dominant_mode']} ({info['dominant_value']:+.3f})")
+            dom_val = info['mean_features'][np.argmax(np.abs(info['mean_features']))]
+            if normalized:
+                print(f"  → Dominant mode: {info['dominant_mode']} ({dom_val:.3f})")
+            else:
+                print(f"  → Dominant mode: {info['dominant_mode']} ({info['dominant_value']:+.3f})")
     
     print("="*70)
 

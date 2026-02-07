@@ -139,9 +139,10 @@ def test_synthetic_recovery(task_name='context', n_epochs=1000, hidden_size=100,
     
     if verbose:
         print(f"  Features shape: {features.shape}")
-        print(f"  Mean |rotation corr|: {np.mean(np.abs(features[:, 0])):.3f}")
-        print(f"  Mean |contraction corr|: {np.mean(np.abs(features[:, 1])):.3f}")
-        print(f"  Mean |expansion corr|: {np.mean(np.abs(features[:, 2])):.3f}")
+        print(f"  Mean rotation ratio: {np.mean(features[:, 0]):.3f}")
+        print(f"  Mean contraction ratio: {np.mean(features[:, 1]):.3f}")
+        print(f"  Mean expansion ratio: {np.mean(features[:, 2]):.3f}")
+        print(f"  (Ratios normalized to sum=1, uniform would be 0.333)")
     
     # 7. Cluster units
     n_clusters = 4  # Integrator, Rotator, Explorer, Mixed
