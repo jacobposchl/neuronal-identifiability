@@ -167,15 +167,21 @@ def classify_units(features, n_clusters=4, method='kmeans', return_details=False
         raise ValueError(f"Unknown method: {method}. Use 'kmeans' or 'argmax'")
 
 
-def interpret_clusters(features, labels, cluster_names=None, threshold=0.03):
+def interpret_clusters(features, labels, cluster_names=None, threshold=0.03, strict_threshold=0.10):
     """
-    Interpret cluster assignments by analyzing mean features.
+    Interpret cluster assignments with 3-tier confidence classification.
+    
+    Uses three confidence levels:
+    - Very Low (< threshold): 'Mixed' - too weak to classify
+    - Low (< strict_threshold): 'Type?' - weak signal, uncertain classification  
+    - High (>= strict_threshold): 'Type' - confident classification
     
     Args:
         features: (n_units, 3) deformation feature array
         labels: (n_units,) cluster assignments
         cluster_names: Optional list of names (default: auto-assign based on features)
-        threshold: Minimum absolute correlation to assign a type (default: 0.03)
+        threshold: Minimum correlation to distinguish from Mixed (default: 0.03)
+        strict_threshold: Minimum for confident classification (default: 0.10)
     
     Returns:
         interpretation: Dict mapping cluster ID to interpretation dict
@@ -184,6 +190,7 @@ def interpret_clusters(features, labels, cluster_names=None, threshold=0.03):
     interpretation = {}
     
     feature_names = ['Rotation', 'Contraction', 'Expansion']
+    type_names = ['Rotator', 'Integrator', 'Explorer']
     
     for cluster_id in range(n_clusters):
         cluster_mask = labels == cluster_id
@@ -194,7 +201,9 @@ def interpret_clusters(features, labels, cluster_names=None, threshold=0.03):
                 'name': 'Empty',
                 'n_units': 0,
                 'mean_features': np.zeros(3),
-                'dominant_mode': None
+                'dominant_mode': None,
+                'confidence': 'none',
+                'max_correlation': 0.0
             }
             continue
         
@@ -202,30 +211,37 @@ def interpret_clusters(features, labels, cluster_names=None, threshold=0.03):
         cluster_features = features[cluster_mask]
         mean_features = np.mean(cluster_features, axis=0)
         
-        # Determine dominant mode with threshold
+        # Determine dominant mode
         abs_features = np.abs(mean_features)
         dominant_idx = np.argmax(abs_features)
         dominant_value = mean_features[dominant_idx]
         dominant_mode = feature_names[dominant_idx]
-        
-        # Check if dominant feature is significantly above threshold
         max_abs_corr = abs_features[dominant_idx]
         
-        # Auto-assign name if not provided
+        # THREE-TIER CLASSIFICATION
         if cluster_names is None:
-            # Require minimum absolute correlation to assign specific type
             if max_abs_corr < threshold:
-                name = 'Mixed'  # Too weak to classify
-            elif dominant_mode == 'Rotation':
-                name = 'Rotator'
-            elif dominant_mode == 'Contraction':
-                name = 'Integrator'
-            elif dominant_mode == 'Expansion':
-                name = 'Explorer'
-            else:
+                # Very weak - Mixed type
                 name = 'Mixed'
+                confidence = 'very_low'
+                
+            elif max_abs_corr < strict_threshold:
+                # Weak signal - classify but flag uncertainty
+                name = type_names[dominant_idx] + '?'
+                confidence = 'low'
+                
+            else:
+                # Strong signal - confident classification
+                name = type_names[dominant_idx]
+                confidence = 'high'
+                
+                # Check for multi-modal units (two modes within 20% of each other)
+                sorted_abs = np.sort(abs_features)[::-1]
+                if len(sorted_abs) > 1 and sorted_abs[1] > 0.8 * sorted_abs[0]:
+                    name = name + '+Mixed'
         else:
             name = cluster_names[cluster_id] if cluster_id < len(cluster_names) else f'Cluster {cluster_id}'
+            confidence = 'user_specified'
         
         interpretation[cluster_id] = {
             'name': name,
@@ -233,7 +249,9 @@ def interpret_clusters(features, labels, cluster_names=None, threshold=0.03):
             'mean_features': mean_features,
             'dominant_mode': dominant_mode,
             'dominant_value': dominant_value,
-            'percentage': 100 * n_units / len(labels)
+            'percentage': 100 * n_units / len(labels),
+            'confidence': confidence,
+            'max_correlation': max_abs_corr
         }
     
     return interpretation
@@ -458,3 +476,25 @@ def selectivity_baseline(hidden_states, trial_indices=None, n_bins=5):
         features.append([temporal_var, amplitude, cv, peak])
     
     return np.array(features)
+
+
+def select_features_by_task_dynamics(hidden_states, deformation_features, 
+                                      task_dynamics='unknown', deformation_valid=True):
+    """
+    Choose features based on task dynamics type.
+    
+    Different tasks require different feature representations:
+    - Static/Memory tasks: Use PCA or selectivity (capture state structure)
+    - Oscillatory tasks: Use frequency features or deformation
+    - Mixed/Unknown: Use deformation if valid, else PCA
+    
+    Args:
+        hidden_states: (n_units, n_timesteps) RNN activations
+        deformation_features: (n_units, 3) deformation-based features (or None)
+        task_dynamics: 'static', 'oscillatory', 'mixed', 'discrete', or 'unknown'
+        deformation_valid: Whether deformation estimation succeeded
+    
+    Returns:
+        features: (n_units, n_features) selected feature array
+        method_used: str - name of method used
+    \"\"\"\n    from sklearn.decomposition import PCA\n    \n    n_units = hidden_states.shape[0]\n    \n    if task_dynamics == 'static' or task_dynamics == 'discrete':\n        # For memory/discrete tasks: use PCA (captures state structure)\n        print(\"  Using PCA features (static/discrete dynamics)\")\n        pca = PCA(n_components=min(10, n_units))\n        pca_features = pca.fit_transform(hidden_states)\n        return pca_features, 'pca'\n    \n    elif task_dynamics == 'oscillatory':\n        if deformation_valid and deformation_features is not None:\n            # Try deformation first for oscillatory tasks\n            print(\"  Using deformation features (oscillatory dynamics)\")\n            return deformation_features, 'deformation'\n        else:\n            # Fallback to frequency domain\n            print(\"  Using frequency features (oscillatory dynamics, deformation failed)\")\n            from scipy.fft import fft\n            \n            freq_features = []\n            for unit in hidden_states:\n                fft_vals = np.abs(fft(unit))\n                freq_features.append(fft_vals[:50])  # Low frequencies\n            return np.array(freq_features), 'frequency'\n    \n    elif task_dynamics == 'mixed':\n        if deformation_valid and deformation_features is not None:\n            # Mixed tasks: use deformation\n            print(\"  Using deformation features (mixed dynamics)\")\n            return deformation_features, 'deformation'\n        else:\n            print(\"  Using PCA features (mixed dynamics, deformation failed)\")\n            pca = PCA(n_components=min(5, n_units))\n            return pca.fit_transform(hidden_states), 'pca'\n    \n    else:  # unknown\n        if deformation_valid and deformation_features is not None:\n            # Check signal strength\n            avg_corr = np.mean(np.abs(deformation_features))\n            if avg_corr > 0.05:\n                # Strong deformation signals\n                print(\"  Using deformation features (strong signals)\")\n                return deformation_features, 'deformation'\n            else:\n                # Weak signals - hybrid approach\n                print(\"  Using hybrid PCA+deformation features (weak deformation signals)\")\n                pca = PCA(n_components=3)\n                pca_features = pca.fit_transform(hidden_states)\n                \n                # Weight by correlation strength\n                hybrid = 0.3 * deformation_features + 0.7 * pca_features\n                return hybrid, 'hybrid'\n        else:\n            # Deformation failed - use PCA\n            print(\"  Using PCA features (deformation unavailable)\")\n            pca = PCA(n_components=min(5, n_units))\n            return pca.fit_transform(hidden_states), 'pca'

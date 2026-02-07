@@ -17,10 +17,11 @@ sys.path.insert(0, str(project_root))
 
 from src.rnn_models import VanillaRNN, SimpleLSTM, SimpleGRU
 from src.tasks import FlipFlopTask, CyclingMemoryTask, ContextIntegrationTask, get_task
-from src.deformation_utils import estimate_deformation_from_rnn, smooth_deformation_signals
+from src.deformation_utils import (estimate_deformation_from_rnn, smooth_deformation_signals,
+                                    detect_discrete_dynamics, validate_task_dynamics)
 from src.rnn_features import (extract_rnn_unit_features, classify_units, 
                                interpret_clusters, print_cluster_summary,
-                               compare_to_baseline)
+                               compare_to_baseline, select_features_by_task_dynamics)
 from src.visualization import ensure_dirs, plot_bar
 
 
@@ -121,34 +122,76 @@ def run_single_task_experiment(task_name='flipflop', architecture='vanilla',
         hidden_states, rnn=None, dt=0.01, latent_dim=3, method='pca_then_local'
     )
     
-    # Smooth deformation signals
+    # Smooth deformation signals (handles None returns)
     rotation_traj, contraction_traj, expansion_traj = smooth_deformation_signals(
         rotation_traj, contraction_traj, expansion_traj, sigma=5
     )
     
-    if verbose:
+    # Check if deformation estimation succeeded
+    deformation_valid = (rotation_traj is not None)
+    
+    if deformation_valid and verbose:
         print(f"  Rotation range: [{np.min(rotation_traj):.3f}, {np.max(rotation_traj):.3f}]")
         print(f"  Contraction range: [{np.min(contraction_traj):.3f}, {np.max(contraction_traj):.3f}]")
         print(f"  Expansion range: [{np.min(expansion_traj):.3f}, {np.max(expansion_traj):.3f}]")
     
-    # 6. Extract unit features
+    # Detect discrete dynamics
+    is_discrete = False
+    if latent_traj is not None:
+        is_discrete, _, dynamics_info = detect_discrete_dynamics(latent_traj)
+        if verbose and is_discrete:
+            print(f"  Discrete dynamics detected: {dynamics_info['dynamics_type']}")
+    
+    # Validate dynamics match task expectations
+    if verbose:
+        print(f"\nValidating task dynamics...")
+    
+    valid, issues, suggestions = validate_task_dynamics(
+        task_name, 
+        (rotation_traj, contraction_traj, expansion_traj), 
+        hidden_states,
+        latent_traj
+    )
+    
+    if not valid and verbose:
+        print(f"  ⚠️  VALIDATION WARNINGS:")
+        for issue in issues:
+            print(f"    - {issue}")
+        if suggestions:
+            print(f"  Suggestions:")
+            for suggestion in suggestions:
+                print(f"    • {suggestion}")
+    
+    # 6. Extract unit features (task-appropriate)
     if verbose:
         print(f"\nExtracting unit features...")
     
-    features = extract_rnn_unit_features(
-        hidden_states, rotation_traj, contraction_traj, expansion_traj,
-        smooth_sigma=5
-    )
+    # First try deformation-based features if valid
+    if deformation_valid:
+        deformation_features = extract_rnn_unit_features(
+            hidden_states, rotation_traj, contraction_traj, expansion_traj,
+            smooth_sigma=5
+        )
+        
+        if verbose:
+            print(f"  Deformation features shape: {deformation_features.shape}")
+            print(f"  Mean |rotation corr|: {np.mean(np.abs(deformation_features[:, 0])):.3f}")
+            print(f"  Mean |contraction corr|: {np.mean(np.abs(deformation_features[:, 1])):.3f}")
+            print(f"  Mean |expansion corr|: {np.mean(np.abs(deformation_features[:, 2])):.3f}")
+    else:
+        deformation_features = None
+        if verbose:
+            print(f"  Deformation features unavailable (estimation failed)")
     
-    if verbose:
-        print(f"  Features shape: {features.shape}")
-        print(f"  Mean |rotation corr|: {np.mean(np.abs(features[:, 0])):.3f}")
-        print(f"  Mean |contraction corr|: {np.mean(np.abs(features[:, 1])):.3f}")
-        print(f"  Mean |expansion corr|: {np.mean(np.abs(features[:, 2])):.3f}")
+    # Select features based on task dynamics
+    task_dynamics = 'discrete' if is_discrete else 'unknown'
+    features, method_used = select_features_by_task_dynamics(
+        hidden_states, deformation_features, task_dynamics, deformation_valid
+    )
     
     # 7. Cluster units
     if verbose:
-        print(f"\nClustering units...")
+        print(f"\nClustering units using {method_used} features...")
     
     labels, details = classify_units(features, n_clusters=4, method='kmeans', 
                                      return_details=True)
@@ -157,29 +200,42 @@ def run_single_task_experiment(task_name='flipflop', architecture='vanilla',
     
     if verbose:
         print(f"  Silhouette score: {details['silhouette']:.3f}")
+        
+        # Check confidence levels
+        low_conf_count = sum(1 for interp in interpretation.values() 
+                           if interp.get('confidence', 'high') in ['very_low', 'low'])
+        if low_conf_count > 0:
+            print(f"  ⚠️  Warning: {low_conf_count} clusters have low confidence")
+        
         print_cluster_summary(interpretation)
     
-    # 8. Compare to baselines
+    # 8. Compare to baselines (only if using deformation features)
     if verbose:
         print(f"\nComparing to baseline methods...")
     
-    baseline_comparison = compare_to_baseline(features, labels, hidden_states)
-    
-    if verbose:
-        print(f"  Silhouette scores:")
-        print(f"    Deformation method: {baseline_comparison['deformation']['silhouette']:.3f}")
-        print(f"    PCA baseline:       {baseline_comparison['pca']['silhouette']:.3f}")
-        print(f"    Raw activations:    {baseline_comparison['raw']['silhouette']:.3f}")
+    # Use appropriate comparison based on method
+    if method_used == 'deformation':
+        baseline_comparison = compare_to_baseline(features, labels, hidden_states)
         
-        deform_score = baseline_comparison['deformation']['silhouette']
-        pca_score = baseline_comparison['pca']['silhouette']
-        raw_score = baseline_comparison['raw']['silhouette']
-        
-        improvement_pca = (deform_score - pca_score) / (pca_score + 1e-10) * 100
-        improvement_raw = (deform_score - raw_score) / (raw_score + 1e-10) * 100
-        
-        print(f"  Improvement over PCA: {improvement_pca:+.1f}%")
-        print(f"  Improvement over raw: {improvement_raw:+.1f}%")
+        if verbose:
+            print(f"  Silhouette scores:")
+            print(f"    Deformation method: {baseline_comparison['deformation']['silhouette']:.3f}")
+            print(f"    PCA baseline:       {baseline_comparison['pca']['silhouette']:.3f}")
+            print(f"    Raw activations:    {baseline_comparison['raw']['silhouette']:.3f}")
+            
+            deform_score = baseline_comparison['deformation']['silhouette']
+            pca_score = baseline_comparison['pca']['silhouette']
+            raw_score = baseline_comparison['raw']['silhouette']
+            
+            improvement_pca = (deform_score - pca_score) / (pca_score + 1e-10) * 100
+            improvement_raw = (deform_score - raw_score) / (raw_score + 1e-10) * 100
+            
+            print(f"  Improvement over PCA: {improvement_pca:+.1f}%")
+            print(f"  Improvement over raw: {improvement_raw:+.1f}%")
+    else:
+        baseline_comparison = None
+        if verbose:
+            print(f"  Using {method_used} features (baseline comparison not applicable)")
     
     # 9. Visualize results
     if verbose:
@@ -201,6 +257,73 @@ def run_single_task_experiment(task_name='flipflop', architecture='vanilla',
     if verbose:
         print(f"  Saved: {plot_path}")
     
+    # Diagnostic plots
+    if deformation_valid and latent_traj is not None:
+        import matplotlib.pyplot as plt
+        
+        # Plot 1: Latent trajectory variance
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+        
+        # Latent PCA trajectories
+        ax = axes[0, 0]
+        for dim in range(min(3, latent_traj.shape[1])):
+            ax.plot(latent_traj[:, dim], alpha=0.7, label=f'PC{dim+1}')
+        ax.set_xlabel('Time')
+        ax.set_ylabel('Latent Coordinate')
+        ax.set_title('Latent Trajectory (PCA)')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        # Latent variance over time
+        ax = axes[0, 1]
+        latent_std = np.std(latent_traj, axis=1)
+        ax.plot(latent_std)
+        ax.axhline(np.mean(latent_std), color='r', linestyle='--', label='Mean')
+        ax.set_xlabel('Time')
+        ax.set_ylabel('Std Dev across PCs')
+        ax.set_title('Latent Variance Over Time')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        # Deformation signal magnitudes
+        ax = axes[1, 0]
+        ax.plot(np.abs(rotation_traj), label='|Rotation|', alpha=0.7)
+        ax.plot(np.abs(contraction_traj), label='|Contraction|', alpha=0.7)
+        ax.plot(np.abs(expansion_traj), label='|Expansion|', alpha=0.7)
+        ax.set_xlabel('Time')
+        ax.set_ylabel('Signal Magnitude')
+        ax.set_title('Deformation Signal Magnitudes')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        ax.set_yscale('log')
+        
+        # Velocity distribution (if discrete dynamics)
+        ax = axes[1, 1]
+        if is_discrete and 'velocities' in dynamics_info:
+            velocities = dynamics_info['velocities']
+            ax.hist(velocities, bins=50, alpha=0.7, edgecolor='black')
+            ax.axvline(dynamics_info.get('threshold', 0), color='r', linestyle='--', 
+                      label=f"Threshold: {dynamics_info.get('threshold', 0):.3f}")
+            ax.set_xlabel('Step Velocity')
+            ax.set_ylabel('Frequency')
+            ax.set_title(f"Velocity Distribution ({dynamics_info.get('dynamics_type', 'unknown')})")
+            ax.legend()
+        else:
+            velocities = np.sqrt(np.sum(np.diff(latent_traj, axis=0)**2, axis=1))
+            ax.hist(velocities, bins=50, alpha=0.7, edgecolor='black')
+            ax.set_xlabel('Step Velocity')
+            ax.set_ylabel('Frequency')
+            ax.set_title('Velocity Distribution (continuous)')
+        ax.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        diagnostic_path = f"results/rnn_figures/{task_name}_{architecture}_diagnostics.png"
+        plt.savefig(diagnostic_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        if verbose:
+            print(f"  Saved diagnostics: {diagnostic_path}")
+    
     # Compile results
     results = {
         'task_name': task_name,
@@ -214,10 +337,21 @@ def run_single_task_experiment(task_name='flipflop', architecture='vanilla',
         'deformation': {
             'rotation': rotation_traj,
             'contraction': contraction_traj,
-            'expansion': expansion_traj
+            'expansion': expansion_traj,
+            'valid': deformation_valid
         },
         'latent_trajectory': latent_traj,
+        'dynamics': {
+            'is_discrete': is_discrete,
+            'info': dynamics_info if is_discrete else None
+        },
+        'validation': {
+            'valid': valid,
+            'issues': issues,
+            'suggestions': suggestions
+        },
         'features': features,
+        'feature_method': method_used,
         'labels': labels,
         'interpretation': interpretation,
         'silhouette': details['silhouette'],

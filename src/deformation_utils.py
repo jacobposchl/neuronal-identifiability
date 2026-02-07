@@ -155,16 +155,10 @@ def estimate_deformation_from_latents(latent_trajectory, dt=0.01, n_samples=200,
     
     # Check for constant or near-constant trajectory (no dynamics)
     trajectory_std = np.std(latent_trajectory, axis=0)
-    if np.all(trajectory_std < 1e-8):
-        # Constant trajectory - return small random noise instead of zeros
-        # This prevents NaN correlations and clustering failures
+    if np.all(trajectory_std < 1e-6):  # Relaxed from 1e-8
         print("  Warning: Latent trajectory is constant (no dynamics detected)")
-        print("  Returning minimal random deformation signals as fallback")
-        np.random.seed(42)
-        rotation_traj = np.random.randn(n_timesteps) * 1e-6
-        contraction_traj = np.random.randn(n_timesteps) * 1e-6
-        expansion_traj = np.random.randn(n_timesteps) * 1e-6
-        return rotation_traj, contraction_traj, expansion_traj
+        print("  Deformation estimation failed - returning None")
+        return None, None, None
     
     # Sample points for Jacobian estimation (expensive to compute at every point)
     sample_indices = np.linspace(0, n_timesteps - 1, min(n_samples, n_timesteps), dtype=int)
@@ -236,15 +230,12 @@ def estimate_deformation_from_latents(latent_trajectory, dt=0.01, n_samples=200,
     expansion_trajectory = np.interp(full_times, sample_times, expansion_samples)
     
     # Check if all signals are zero (estimation failed)
-    if (np.all(rotation_trajectory == 0) and 
-        np.all(contraction_trajectory == 0) and 
-        np.all(expansion_trajectory == 0)):
+    if (np.all(np.abs(rotation_trajectory) < 1e-10) and 
+        np.all(np.abs(contraction_trajectory) < 1e-10) and 
+        np.all(np.abs(expansion_trajectory) < 1e-10)):
         print("  Warning: Deformation estimation produced all zeros")
-        print("  Returning minimal random signals as fallback")
-        np.random.seed(42)
-        rotation_trajectory = np.random.randn(n_timesteps) * 1e-6
-        contraction_trajectory = np.random.randn(n_timesteps) * 1e-6
-        expansion_trajectory = np.random.randn(n_timesteps) * 1e-6
+        print("  Deformation estimation failed - returning None")
+        return None, None, None
     
     return rotation_trajectory, contraction_trajectory, expansion_trajectory
 
@@ -338,17 +329,70 @@ def smooth_deformation_signals(rotation, contraction, expansion, sigma=5):
     """
     Smooth deformation signals with Gaussian filter.
     
+    Applies robust scaling before smoothing to handle extreme outliers.
+    
     Args:
         rotation, contraction, expansion: (n_timesteps,) deformation trajectories
+                                         Can be None if estimation failed
         sigma: Standard deviation of Gaussian kernel
     
     Returns:
-        Smoothed rotation, contraction, expansion trajectories
+        Smoothed rotation, contraction, expansion trajectories, or None if inputs are None
     """
-    from scipy.ndimage import gaussian_filter1d
+    # Handle None inputs (failed estimation)
+    if rotation is None or contraction is None or expansion is None:
+        return None, None, None
     
-    rotation_smooth = gaussian_filter1d(rotation, sigma=sigma)
-    contraction_smooth = gaussian_filter1d(contraction, sigma=sigma)
-    expansion_smooth = gaussian_filter1d(expansion, sigma=sigma)
+    from scipy.ndimage import gaussian_filter1d
+    from sklearn.preprocessing import RobustScaler
+    
+    # Apply robust scaling to handle extreme outliers
+    scaler = RobustScaler()
+    
+    # Reshape for scaler (needs 2D)
+    rotation_scaled = scaler.fit_transform(rotation.reshape(-1, 1)).flatten()
+    contraction_scaled = scaler.fit_transform(contraction.reshape(-1, 1)).flatten()
+    expansion_scaled = scaler.fit_transform(expansion.reshape(-1, 1)).flatten()
+    
+    # Apply smoothing
+    rotation_smooth = gaussian_filter1d(rotation_scaled, sigma=sigma)
+    contraction_smooth = gaussian_filter1d(contraction_scaled, sigma=sigma)
+    expansion_smooth = gaussian_filter1d(expansion_scaled, sigma=sigma)
     
     return rotation_smooth, contraction_smooth, expansion_smooth
+
+
+def detect_discrete_dynamics(latent_trajectory, threshold=0.1):
+    """
+    Detect if dynamics are discrete state transitions vs continuous flow.
+    
+    Discrete dynamics: velocity alternates between ~0 (stable) and high (transition)
+    Continuous dynamics: velocity varies smoothly
+    
+    Args:
+        latent_trajectory: (n_timesteps, latent_dim) trajectory
+        threshold: Velocity threshold for "in transition"
+    
+    Returns:
+        is_discrete: bool - True if discrete dynamics detected
+        velocity_mag: (n_timesteps,) velocity magnitude time series
+        diagnostics: Dict with additional info
+    \"\"\"\n    velocities = np.gradient(latent_trajectory, axis=0)\n    velocity_mag = np.linalg.norm(velocities, axis=1)
+    \n    # Discrete transitions: velocity alternates between ~0 and high\n    high_vel_frac = np.mean(velocity_mag > threshold)\n    \n    # Additional check: bimodal velocity distribution\n    low_vel_frac = np.mean(velocity_mag < threshold/10)\n    \n    # If 5-20% transitioning and 60-95% stable → discrete\n    is_discrete = (0.05 < high_vel_frac < 0.20) and (low_vel_frac > 0.60)\n    \n    diagnostics = {\n        'mean_velocity': np.mean(velocity_mag),\n        'velocity_std': np.std(velocity_mag),\n        'high_vel_fraction': high_vel_frac,\n        'low_vel_fraction': low_vel_frac,\n        'dynamics_type': 'discrete' if is_discrete else 'continuous'\n    }\n    \n    return is_discrete, velocity_mag, diagnostics
+
+
+def validate_task_dynamics(task_name, deformation_signals, hidden_states, latent_trajectory=None):
+    """
+    Validate that learned dynamics match task expectations.
+    
+    Args:
+        task_name: Name of task ('flipflop', 'cycling', 'context', etc.)
+        deformation_signals: Tuple of (rotation, contraction, expansion) or (None, None, None)
+        hidden_states: (n_units, n_timesteps) RNN activations
+        latent_trajectory: Optional (n_timesteps, latent_dim) trajectory
+    
+    Returns:
+        valid: bool - True if no major issues  
+        issues: List of str - Problems found
+        suggestions: List of str - Recommended fixes
+    \"\"\"\n    issues = []\n    suggestions = []\n    \n    rot, con, exp = deformation_signals\n    \n    # Check 1: Deformation estimation success\n    if rot is None or con is None or exp is None:\n        issues.append(\"Deformation estimation failed (returned None)\")\n        suggestions.append(\"Network may have learned discrete states instead of continuous dynamics\")\n        suggestions.append(\"Try: Different architecture (GRU/LSTM), increase training variance, or use PCA features\")\n        return False, issues, suggestions\n    \n    # Check 2: Signal strength\n    avg_magnitude = np.mean([np.std(rot), np.std(con), np.std(exp)])\n    if avg_magnitude < 0.01:\n        issues.append(f\"Deformation signals are very weak (std={avg_magnitude:.2e})\")\n        suggestions.append(\"Weak deformation suggests minimal continuous dynamics\")\n        suggestions.append(\"Consider using task-specific features (PCA, selectivity)\")\n    \n    # Check 3: Discrete dynamics detection\n    if latent_trajectory is not None:\n        is_discrete, _, diag = detect_discrete_dynamics(latent_trajectory)\n        if is_discrete:\n            issues.append(f\"Discrete dynamics detected ({diag['dynamics_type']})\")\n            suggestions.append(\"Network uses discrete state-switching rather than continuous flow\")\n            suggestions.append(\"Deformation-based method may not be appropriate for this task\")\n    \n    # Check 4: Task-specific expectations\n    task_lower = task_name.lower()\n    \n    if 'cycling' in task_lower or 'oscillat' in task_lower:\n        # Should have significant rotation\n        if np.std(rot) < 0.1 * max(np.std(con), np.std(exp)):\n            issues.append(\"Expected rotation-dominant dynamics for cycling task\")\n            suggestions.append(\"Network may be using discrete states instead of rotation\")\n            suggestions.append(\"Try: Continuous-time RNN, add recurrent noise, or different task parameters\")\n    \n    elif 'flipflop' in task_lower or 'memory' in task_lower:\n        # Expect stable states (low dynamics during maintenance)\n        total_dynamics = avg_magnitude\n        hidden_variance = np.mean(np.var(hidden_states, axis=1))\n        \n        if total_dynamics > 0.3 * hidden_variance:\n            issues.append(\"Memory task shows high dynamics (expected stable states)\")\n    \n    elif 'context' in task_lower or 'integration' in task_lower:\n        # Expect mixed dynamics with expansion during transitions\n        if np.std(exp) < 0.5 * np.std(con):\n            issues.append(\"Expected significant expansion for context transitions\")\n    \n    valid = len(issues) == 0\n    return valid, issues, suggestions
