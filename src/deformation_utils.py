@@ -377,8 +377,30 @@ def detect_discrete_dynamics(latent_trajectory, threshold=0.1):
         is_discrete: bool - True if discrete dynamics detected
         velocity_mag: (n_timesteps,) velocity magnitude time series
         diagnostics: Dict with additional info
-    \"\"\"\n    velocities = np.gradient(latent_trajectory, axis=0)\n    velocity_mag = np.linalg.norm(velocities, axis=1)
-    \n    # Discrete transitions: velocity alternates between ~0 and high\n    high_vel_frac = np.mean(velocity_mag > threshold)\n    \n    # Additional check: bimodal velocity distribution\n    low_vel_frac = np.mean(velocity_mag < threshold/10)\n    \n    # If 5-20% transitioning and 60-95% stable → discrete\n    is_discrete = (0.05 < high_vel_frac < 0.20) and (low_vel_frac > 0.60)\n    \n    diagnostics = {\n        'mean_velocity': np.mean(velocity_mag),\n        'velocity_std': np.std(velocity_mag),\n        'high_vel_fraction': high_vel_frac,\n        'low_vel_fraction': low_vel_frac,\n        'dynamics_type': 'discrete' if is_discrete else 'continuous'\n    }\n    \n    return is_discrete, velocity_mag, diagnostics
+    """
+    velocities = np.gradient(latent_trajectory, axis=0)
+    velocity_mag = np.linalg.norm(velocities, axis=1)
+    
+    # Discrete transitions: velocity alternates between ~0 and high
+    high_vel_frac = np.mean(velocity_mag > threshold)
+    
+    # Additional check: bimodal velocity distribution
+    low_vel_frac = np.mean(velocity_mag < threshold/10)
+    
+    # If 5-20% transitioning and 60-95% stable → discrete
+    is_discrete = (0.05 < high_vel_frac < 0.20) and (low_vel_frac > 0.60)
+    
+    diagnostics = {
+        'mean_velocity': np.mean(velocity_mag),
+        'velocity_std': np.std(velocity_mag),
+        'high_vel_fraction': high_vel_frac,
+        'low_vel_fraction': low_vel_frac,
+        'dynamics_type': 'discrete' if is_discrete else 'continuous',
+        'threshold': threshold,
+        'velocities': velocity_mag
+    }
+    
+    return is_discrete, velocity_mag, diagnostics
 
 
 def validate_task_dynamics(task_name, deformation_signals, hidden_states, latent_trajectory=None):
@@ -395,4 +417,5 @@ def validate_task_dynamics(task_name, deformation_signals, hidden_states, latent
         valid: bool - True if no major issues  
         issues: List of str - Problems found
         suggestions: List of str - Recommended fixes
-    \"\"\"\n    issues = []\n    suggestions = []\n    \n    rot, con, exp = deformation_signals\n    \n    # Check 1: Deformation estimation success\n    if rot is None or con is None or exp is None:\n        issues.append(\"Deformation estimation failed (returned None)\")\n        suggestions.append(\"Network may have learned discrete states instead of continuous dynamics\")\n        suggestions.append(\"Try: Different architecture (GRU/LSTM), increase training variance, or use PCA features\")\n        return False, issues, suggestions\n    \n    # Check 2: Signal strength\n    avg_magnitude = np.mean([np.std(rot), np.std(con), np.std(exp)])\n    if avg_magnitude < 0.01:\n        issues.append(f\"Deformation signals are very weak (std={avg_magnitude:.2e})\")\n        suggestions.append(\"Weak deformation suggests minimal continuous dynamics\")\n        suggestions.append(\"Consider using task-specific features (PCA, selectivity)\")\n    \n    # Check 3: Discrete dynamics detection\n    if latent_trajectory is not None:\n        is_discrete, _, diag = detect_discrete_dynamics(latent_trajectory)\n        if is_discrete:\n            issues.append(f\"Discrete dynamics detected ({diag['dynamics_type']})\")\n            suggestions.append(\"Network uses discrete state-switching rather than continuous flow\")\n            suggestions.append(\"Deformation-based method may not be appropriate for this task\")\n    \n    # Check 4: Task-specific expectations\n    task_lower = task_name.lower()\n    \n    if 'cycling' in task_lower or 'oscillat' in task_lower:\n        # Should have significant rotation\n        if np.std(rot) < 0.1 * max(np.std(con), np.std(exp)):\n            issues.append(\"Expected rotation-dominant dynamics for cycling task\")\n            suggestions.append(\"Network may be using discrete states instead of rotation\")\n            suggestions.append(\"Try: Continuous-time RNN, add recurrent noise, or different task parameters\")\n    \n    elif 'flipflop' in task_lower or 'memory' in task_lower:\n        # Expect stable states (low dynamics during maintenance)\n        total_dynamics = avg_magnitude\n        hidden_variance = np.mean(np.var(hidden_states, axis=1))\n        \n        if total_dynamics > 0.3 * hidden_variance:\n            issues.append(\"Memory task shows high dynamics (expected stable states)\")\n    \n    elif 'context' in task_lower or 'integration' in task_lower:\n        # Expect mixed dynamics with expansion during transitions\n        if np.std(exp) < 0.5 * np.std(con):\n            issues.append(\"Expected significant expansion for context transitions\")\n    \n    valid = len(issues) == 0\n    return valid, issues, suggestions
+    """
+    issues = []\n    suggestions = []\n    \n    rot, con, exp = deformation_signals\n    \n    # Check 1: Deformation estimation success\n    if rot is None or con is None or exp is None:\n        issues.append(\"Deformation estimation failed (returned None)\")\n        suggestions.append(\"Network may have learned discrete states instead of continuous dynamics\")\n        suggestions.append(\"Try: Different architecture (GRU/LSTM), increase training variance, or use PCA features\")\n        return False, issues, suggestions\n    \n    # Check 2: Signal strength\n    avg_magnitude = np.mean([np.std(rot), np.std(con), np.std(exp)])\n    if avg_magnitude < 0.01:\n        issues.append(f\"Deformation signals are very weak (std={avg_magnitude:.2e})\")\n        suggestions.append(\"Weak deformation suggests minimal continuous dynamics\")\n        suggestions.append(\"Consider using task-specific features (PCA, selectivity)\")\n    \n    # Check 3: Discrete dynamics detection\n    if latent_trajectory is not None:\n        is_discrete, _, diag = detect_discrete_dynamics(latent_trajectory)\n        if is_discrete:\n            issues.append(f\"Discrete dynamics detected ({diag['dynamics_type']})\")\n            suggestions.append(\"Network uses discrete state-switching rather than continuous flow\")\n            suggestions.append(\"Deformation-based method may not be appropriate for this task\")\n    \n    # Check 4: Task-specific expectations\n    task_lower = task_name.lower()\n    \n    if 'cycling' in task_lower or 'oscillat' in task_lower:\n        # Should have significant rotation\n        if np.std(rot) < 0.1 * max(np.std(con), np.std(exp)):\n            issues.append(\"Expected rotation-dominant dynamics for cycling task\")\n            suggestions.append(\"Network may be using discrete states instead of rotation\")\n            suggestions.append(\"Try: Continuous-time RNN, add recurrent noise, or different task parameters\")\n    \n    elif 'flipflop' in task_lower or 'memory' in task_lower:\n        # Expect stable states (low dynamics during maintenance)\n        total_dynamics = avg_magnitude\n        hidden_variance = np.mean(np.var(hidden_states, axis=1))\n        \n        if total_dynamics > 0.3 * hidden_variance:\n            issues.append(\"Memory task shows high dynamics (expected stable states)\")\n    \n    elif 'context' in task_lower or 'integration' in task_lower:\n        # Expect mixed dynamics with expansion during transitions\n        if np.std(exp) < 0.5 * np.std(con):\n            issues.append(\"Expected significant expansion for context transitions\")\n    \n    valid = len(issues) == 0\n    return valid, issues, suggestions
