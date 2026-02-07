@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import copy
 from src.analysis.rnn_features import interpret_clusters
+from src.models.rnn_models import VanillaRNN
 
 
 def ablate_units(rnn, unit_indices, method='zero'):
@@ -106,13 +107,14 @@ def test_unit_importance(rnn, task, unit_labels, interpretation,
         
         # Compute drop
         accuracy_drop = baseline_accuracy - ablated_accuracy
+        relative_drop = (accuracy_drop / baseline_accuracy * 100) if baseline_accuracy > 0 else 0.0
         
         importance_results[type_name] = {
             'n_units': n_ablated,
             'baseline_accuracy': baseline_accuracy,
             'ablated_accuracy': ablated_accuracy,
             'accuracy_drop': accuracy_drop,
-            'relative_drop': accuracy_drop / baseline_accuracy * 100
+            'relative_drop': relative_drop
         }
         
         if verbose:
@@ -193,8 +195,10 @@ def cross_task_transfer(rnn_task_a, task_a, task_b, unit_labels, interpretation,
         print(f"Test Task: {task_b.__class__.__name__}")
         print("="*70)
     
-    # Train on Task B
-    rnn_task_b = copy.deepcopy(rnn_task_a)
+    # Create new RNN for Task B (with correct input/output sizes)
+    hidden_size = rnn_task_a.hidden_size
+    rnn_task_b = VanillaRNN(task_b.input_size, hidden_size, task_b.output_size)
+    
     if verbose:
         print(f"\nTraining on Task B...")
     
