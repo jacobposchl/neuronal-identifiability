@@ -19,11 +19,11 @@ from sklearn.metrics import silhouette_score
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.rnn_models import VanillaRNN
+from src.models.rnn_models import VanillaRNN
 from src.tasks import get_task
-from src.deformation_utils import estimate_deformation_from_rnn, smooth_deformation_signals
-from src.rnn_features import extract_rnn_unit_features, classify_units, compare_to_baseline
-from src.statistical_tests import (
+from src.core.deformation_utils import estimate_deformation_from_rnn, smooth_deformation_signals
+from src.analysis.rnn_features import extract_rnn_unit_features, classify_units, compare_to_baseline
+from src.analysis.statistical_tests import (
     paired_ttest, bootstrap_ci, permutation_test,
     bonferroni_correction, fdr_correction,
     compare_methods_with_stats, print_comparison_table

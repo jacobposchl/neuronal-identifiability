@@ -22,10 +22,10 @@ import torch.nn as nn
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.rnn_models import VanillaRNN, SimpleLSTM, SimpleGRU
+from src.models.rnn_models import VanillaRNN, SimpleLSTM, SimpleGRU
 from src.tasks import get_task
-from src.deformation_utils import estimate_deformation_from_rnn, smooth_deformation_signals
-from src.rnn_features import extract_rnn_unit_features, classify_units, interpret_clusters
+from src.core.deformation_utils import estimate_deformation_from_rnn, smooth_deformation_signals
+from src.analysis.rnn_features import extract_rnn_unit_features, classify_units, interpret_clusters
 from src.visualization import ensure_dirs
 
 

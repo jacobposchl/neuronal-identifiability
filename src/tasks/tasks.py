@@ -492,12 +492,286 @@ class SequentialMNISTTask(TaskBase):
                 "Rotators (10-20%)")
 
 
+class ParametricWorkingMemoryTask(TaskBase):
+    """
+    Parametric working memory task.
+    
+    Store a continuous value presented at the start, maintain it through a delay,
+    then reproduce it when cued. Probes continuous integration and maintenance.
+    
+    Expected dynamics: Contraction-dominant (line attractor maintenance)
+    Expected unit types: Integrators (70-80%), Rotators (10-15%), Explorers (10-15%)
+    Tier: A (Continuous) - deformation method should work well
+    """
+    
+    def __init__(self, delay_min=30, delay_max=60):
+        super().__init__("ParametricWorkingMemory", input_size=2, output_size=1)
+        self.delay_min = delay_min
+        self.delay_max = delay_max
+    
+    def generate_trial(self, length=150, batch_size=32):
+        """
+        Generate parametric memory sequences.
+        
+        Returns:
+            inputs: (batch, length, 2)
+                    [:, :, 0] = value to store (non-zero only at t=0)
+                    [:, :, 1] = recall cue (0 during storage, 1 at recall)
+            targets: (batch, length, 1) - stored value during recall period
+        """
+        inputs = torch.zeros(batch_size, length, 2)
+        targets = torch.zeros(batch_size, length, 1)
+        
+        for b in range(batch_size):
+            # Random value to store (continuous in [-1, 1])
+            stored_value = np.random.uniform(-1, 1)
+            
+            # Present value at start
+            inputs[b, 0, 0] = stored_value
+            
+            # Random delay period
+            delay = np.random.randint(self.delay_min, self.delay_max)
+            
+            # Recall cue after delay
+            recall_start = delay
+            if recall_start < length:
+                inputs[b, recall_start:, 1] = 1.0  # Recall cue
+                targets[b, recall_start:, 0] = stored_value  # Expected output
+        
+        return inputs, targets
+    
+    def get_expected_dynamics(self):
+        return ("Contraction-dominant: Line attractor for continuous value storage\n"
+                "Expected: Stable manifold for parametric memory maintenance\n"
+                "Unit distribution: Integrators (70-80%), Rotators (10-15%), Explorers (10-15%)")
+
+
+class DelayedMatchToSampleTask(TaskBase):
+    """
+    Delayed match-to-sample task.
+    
+    Present a sample stimulus, delay period, then test stimulus. Network outputs
+    whether test matches sample. Tests working memory and comparison.
+    
+    Expected dynamics: Contraction-dominant (sample storage) + expansion (comparison)
+    Expected unit types: Integrators (50-60%), Explorers (20-30%), Rotators (10-20%)
+    Tier: A (Continuous) - deformation method should work well
+    """
+    
+    def __init__(self, sample_dim=3, delay_min=20, delay_max=40):
+        super().__init__("DelayedMatchToSample", input_size=sample_dim, output_size=1)
+        self.sample_dim = sample_dim
+        self.delay_min = delay_min
+        self.delay_max = delay_max
+    
+    def generate_trial(self, length=120, batch_size=32):
+        """
+        Generate delayed match-to-sample sequences.
+        
+        Returns:
+            inputs: (batch, length, sample_dim) - sample, delay, test stimulus
+            targets: (batch, length, 1) - match decision (+1) or non-match (-1)
+        """
+        inputs = torch.zeros(batch_size, length, self.sample_dim)
+        targets = torch.zeros(batch_size, length, 1)
+        
+        sample_duration = 10
+        test_duration = 10
+        
+        for b in range(batch_size):
+            # Generate random sample pattern
+            sample = torch.randn(self.sample_dim)
+            sample = sample / torch.norm(sample)  # Normalize
+            
+            # Present sample
+            inputs[b, :sample_duration] = sample
+            
+            # Random delay
+            delay = np.random.randint(self.delay_min, self.delay_max)
+            
+            # Test period
+            test_start = sample_duration + delay
+            if test_start + test_duration <= length:
+                # 50% match, 50% non-match
+                is_match = np.random.rand() < 0.5
+                
+                if is_match:
+                    test_pattern = sample
+                    match_signal = 1.0
+                else:
+                    # Generate different pattern
+                    test_pattern = torch.randn(self.sample_dim)
+                    test_pattern = test_pattern / torch.norm(test_pattern)
+                    match_signal = -1.0
+                
+                inputs[b, test_start:test_start + test_duration] = test_pattern
+                targets[b, test_start + test_duration:, 0] = match_signal
+        
+        return inputs, targets
+    
+    def _compute_accuracy(self, outputs, targets):
+        """Match/non-match classification accuracy."""
+        # Only evaluate where target is non-zero
+        mask = (targets != 0).float()
+        if mask.sum() == 0:
+            return 0.0
+        
+        # Sign accuracy
+        correct = (torch.sign(outputs) == torch.sign(targets)).float() * mask
+        accuracy = correct.sum() / mask.sum()
+        return accuracy.item()
+    
+    def get_expected_dynamics(self):
+        return ("Mixed: Contraction during storage, expansion during comparison\n"
+                "Expected: Attractor maintenance + decision dynamics\n"
+                "Unit distribution: Integrators (50-60%), Explorers (20-30%), Rotators (10-20%)")
+
+
+class GoNoGoTask(TaskBase):
+    """
+    Go/No-Go task with evidence accumulation + discrete decision.
+    
+    Accumulate noisy evidence, then make binary decision (Go/No-Go) based on
+    accumulated value. Combines continuous integration with discrete output.
+    
+    Expected dynamics: Mixed (integration → discrete decision)
+    Expected unit types: Balanced, but may struggle with discrete decision boundary
+    Tier: B (Mixed) - borderline for deformation method
+    """
+    
+    def __init__(self, evidence_noise=0.2, decision_boundary=2.0):
+        super().__init__("GoNoGo", input_size=1, output_size=1)
+        self.evidence_noise = evidence_noise
+        self.decision_boundary = decision_boundary
+    
+    def generate_trial(self, length=100, batch_size=32):
+        """
+        Generate Go/No-Go sequences.
+        
+        Returns:
+            inputs: (batch, length, 1) - noisy evidence stream
+            targets: (batch, length, 1) - binary decision at end (+1=Go, -1=NoGo)
+        """
+        inputs = torch.zeros(batch_size, length, 1)
+        targets = torch.zeros(batch_size, length, 1)
+        
+        integration_period = 60
+        decision_start = 70
+        
+        for b in range(batch_size):
+            # Random evidence bias
+            evidence_bias = np.random.uniform(-0.15, 0.15)
+            
+            # Evidence accumulation period
+            accumulated = 0.0
+            for t in range(integration_period):
+                noise = np.random.randn() * self.evidence_noise
+                evidence = evidence_bias + noise
+                inputs[b, t, 0] = evidence
+                accumulated += evidence
+            
+            # Make decision
+            if accumulated > self.decision_boundary:
+                decision = 1.0  # Go
+            else:
+                decision = -1.0  # No-Go
+            
+            # Output decision
+            targets[b, decision_start:, 0] = decision
+        
+        return inputs, targets
+    
+    def _compute_accuracy(self, outputs, targets):
+        """Binary decision accuracy."""
+        mask = (targets != 0).float()
+        if mask.sum() == 0:
+            return 0.0
+        
+        correct = (torch.sign(outputs) == torch.sign(targets)).float() * mask
+        accuracy = correct.sum() / mask.sum()
+        return accuracy.item()
+    
+    def get_expected_dynamics(self):
+        return ("Mixed: Continuous integration → discrete decision boundary\n"
+                "Expected: Integration ramp + binary classification\n"
+                "Unit distribution: Integrators (40-50%), Explorers (30-40%), Rotators (10-20%)")
+
+
+class FiniteStateMachineTask(TaskBase):
+    """
+    Finite state machine task with discrete state transitions.
+    
+    Network implements a 3-state FSM with discrete transitions triggered by input.
+    Pure discrete dynamics with no continuous integration.
+    
+    State graph: 0 ↔ 1 ↔ 2 (linear 3-state machine)
+    Inputs: -1 (backward), 0 (stay), +1 (forward)
+    
+    Expected dynamics: Pure discrete (state hops)
+    Expected unit types: Deformation method should FAIL (no continuous manifolds)
+    Tier: C (Discrete) - validates method boundaries
+    """
+    
+    def __init__(self, n_states=3, transition_prob=0.1):
+        super().__init__("FiniteStateMachine", input_size=1, output_size=n_states)
+        self.n_states = n_states
+        self.transition_prob = transition_prob
+    
+    def generate_trial(self, length=150, batch_size=32):
+        """
+        Generate FSM sequences.
+        
+        Returns:
+            inputs: (batch, length, 1) - transition commands (-1, 0, +1)
+            targets: (batch, length, n_states) - one-hot state encoding
+        """
+        inputs = torch.zeros(batch_size, length, 1)
+        targets = torch.zeros(batch_size, length, self.n_states)
+        
+        for b in range(batch_size):
+            # Start in random state
+            state = np.random.randint(0, self.n_states)
+            
+            for t in range(length):
+                # Random transition command
+                if np.random.rand() < self.transition_prob:
+                    command = np.random.choice([-1, 1])  # Backward or forward
+                    inputs[b, t, 0] = command
+                    
+                    # Update state
+                    new_state = state + int(command)
+                    # Clamp to valid states
+                    new_state = max(0, min(self.n_states - 1, new_state))
+                    state = new_state
+                
+                # Output current state (one-hot)
+                targets[b, t, state] = 1.0
+        
+        return inputs, targets
+    
+    def _compute_accuracy(self, outputs, targets):
+        """State classification accuracy."""
+        # Argmax prediction
+        pred_states = torch.argmax(outputs, dim=-1)
+        true_states = torch.argmax(targets, dim=-1)
+        
+        correct = (pred_states == true_states).float()
+        accuracy = torch.mean(correct).item()
+        return accuracy
+    
+    def get_expected_dynamics(self):
+        return ("Discrete state transitions: No continuous manifolds\n"
+                "Expected: Deformation method SHOULD FAIL\n"
+                "Unit distribution: Undefined (PCA fallback expected)")
+
+
 def get_task(task_name, **kwargs):
     """
     Factory function to get task by name.
     
     Args:
-        task_name: 'flipflop', 'cycling', 'context', or 'mnist'
+        task_name: 'flipflop', 'cycling', 'context', 'mnist', 'parametric', 
+                   'matchsample', 'gonogo', 'fsm'
         **kwargs: Task-specific parameters
     
     Returns:
@@ -507,7 +781,11 @@ def get_task(task_name, **kwargs):
         'flipflop': FlipFlopTask,
         'cycling': CyclingMemoryTask,
         'context': ContextIntegrationTask,
-        'mnist': SequentialMNISTTask
+        'mnist': SequentialMNISTTask,
+        'parametric': ParametricWorkingMemoryTask,
+        'matchsample': DelayedMatchToSampleTask,
+        'gonogo': GoNoGoTask,
+        'fsm': FiniteStateMachineTask
     }
     
     task_name_lower = task_name.lower()

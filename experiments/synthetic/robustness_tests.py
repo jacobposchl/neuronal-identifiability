@@ -10,11 +10,11 @@ from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from sklearn.decomposition import PCA
 from scipy.stats import ttest_rel
 
-from .population import RealisticNeuralPopulation
-from .dynamics import generate_complex_dynamics, estimate_deformation_from_latents
-from .features import (extract_deformation_features, extract_pca_features,
+from ...src.core.population import RealisticNeuralPopulation
+from ...src.core.dynamics import generate_complex_dynamics, estimate_deformation_from_latents
+from ...src.core.features import (extract_deformation_features, extract_pca_features,
                        extract_crosscorr_features, extract_dimensionality_features)
-from .visualization import plot_bar, plot_line, plot_hist, plot_comparison
+from ...src.visualization import plot_bar, plot_line, plot_hist, plot_comparison
 
 
 def test_information_content(n_trials=10):

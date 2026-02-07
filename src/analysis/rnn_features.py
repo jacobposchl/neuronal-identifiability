@@ -167,7 +167,8 @@ def classify_units(features, n_clusters=4, method='kmeans', return_details=False
         raise ValueError(f"Unknown method: {method}. Use 'kmeans' or 'argmax'")
 
 
-def interpret_clusters(features, labels, cluster_names=None, threshold=0.03, strict_threshold=0.10):
+def interpret_clusters(features, labels, cluster_names=None, threshold=0.03, strict_threshold=0.10, 
+                       feature_type='deformation'):
     """
     Interpret cluster assignments with 3-tier confidence classification.
     
@@ -182,6 +183,7 @@ def interpret_clusters(features, labels, cluster_names=None, threshold=0.03, str
         cluster_names: Optional list of names (default: auto-assign based on features)
         threshold: Minimum correlation to distinguish from Mixed (default: 0.03)
         strict_threshold: Minimum for confident classification (default: 0.10)
+        feature_type: 'deformation' (default) or 'pca' - affects interpretation labels
     
     Returns:
         interpretation: Dict mapping cluster ID to interpretation dict
@@ -189,8 +191,14 @@ def interpret_clusters(features, labels, cluster_names=None, threshold=0.03, str
     n_clusters = len(np.unique(labels))
     interpretation = {}
     
-    feature_names = ['Rotation', 'Contraction', 'Expansion']
-    type_names = ['Rotator', 'Integrator', 'Explorer']
+    if feature_type == 'deformation':
+        feature_names = ['Rotation', 'Contraction', 'Expansion']
+        type_names = ['Rotator', 'Integrator', 'Explorer']
+    else:  # PCA or other
+        feature_names = ['PC1', 'PC2', 'PC3']
+        type_names = ['PC1-dominant', 'PC2-dominant', 'PC3-dominant']
+        # PCA features are on different scale - use percentile-based thresholds
+        # These will be overridden below to use relative strength
     
     for cluster_id in range(n_clusters):
         cluster_mask = labels == cluster_id
@@ -257,24 +265,33 @@ def interpret_clusters(features, labels, cluster_names=None, threshold=0.03, str
     return interpretation
 
 
-def print_cluster_summary(interpretation):
+def print_cluster_summary(interpretation, feature_type='deformation'):
     """
     Print human-readable summary of cluster interpretation.
     
     Args:
         interpretation: Dict from interpret_clusters()
+        feature_type: 'deformation' or 'pca' - affects labels
     """
     print("\n" + "="*70)
     print("UNIT CLASSIFICATION SUMMARY")
+    if feature_type != 'deformation':
+        print(f"(Based on {feature_type.upper()} features - not deformation)")
     print("="*70)
+    
+    # Get feature labels
+    if feature_type == 'deformation':
+        labels = ['rotation', 'contraction', 'expansion']
+    else:
+        labels = ['PC1', 'PC2', 'PC3']
     
     for cluster_id in sorted(interpretation.keys()):
         info = interpretation[cluster_id]
         
         print(f"\nCluster {cluster_id}: {info['name']} ({info['n_units']} units, {info['percentage']:.1f}%)")
-        print(f"  Mean correlation with rotation:    {info['mean_features'][0]:+.3f}")
-        print(f"  Mean correlation with contraction: {info['mean_features'][1]:+.3f}")
-        print(f"  Mean correlation with expansion:   {info['mean_features'][2]:+.3f}")
+        print(f"  Mean correlation with {labels[0]:12s}: {info['mean_features'][0]:+.3f}")
+        print(f"  Mean correlation with {labels[1]:12s}: {info['mean_features'][1]:+.3f}")
+        print(f"  Mean correlation with {labels[2]:12s}: {info['mean_features'][2]:+.3f}")
         
         if info['dominant_mode'] is not None:
             print(f"  → Dominant mode: {info['dominant_mode']} ({info['dominant_value']:+.3f})")
@@ -505,7 +522,7 @@ def select_features_by_task_dynamics(hidden_states, deformation_features,
     if task_dynamics == 'static' or task_dynamics == 'discrete':
         # For memory/discrete tasks: use PCA (captures state structure)
         print("  Using PCA features (static/discrete dynamics)")
-        pca = PCA(n_components=min(10, n_units))
+        pca = PCA(n_components=3)
         pca_features = pca.fit_transform(hidden_states)
         return pca_features, 'pca'
     
@@ -532,7 +549,7 @@ def select_features_by_task_dynamics(hidden_states, deformation_features,
             return deformation_features, 'deformation'
         else:
             print("  Using PCA features (mixed dynamics, deformation failed)")
-            pca = PCA(n_components=min(5, n_units))
+            pca = PCA(n_components=3)
             return pca.fit_transform(hidden_states), 'pca'
     
     else:  # unknown
@@ -555,5 +572,5 @@ def select_features_by_task_dynamics(hidden_states, deformation_features,
         else:
             # Deformation failed - use PCA
             print("  Using PCA features (deformation unavailable)")
-            pca = PCA(n_components=min(5, n_units))
+            pca = PCA(n_components=3)
             return pca.fit_transform(hidden_states), 'pca'

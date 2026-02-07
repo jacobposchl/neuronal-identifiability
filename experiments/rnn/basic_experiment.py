@@ -15,11 +15,11 @@ import torch
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.rnn_models import VanillaRNN, SimpleLSTM, SimpleGRU
+from src.models.rnn_models import VanillaRNN, SimpleLSTM, SimpleGRU
 from src.tasks import FlipFlopTask, CyclingMemoryTask, ContextIntegrationTask, get_task
-from src.deformation_utils import (estimate_deformation_from_rnn, smooth_deformation_signals,
+from src.core.deformation_utils import (estimate_deformation_from_rnn, smooth_deformation_signals,
                                     detect_discrete_dynamics, validate_task_dynamics)
-from src.rnn_features import (extract_rnn_unit_features, classify_units, 
+from src.analysis.rnn_features import (extract_rnn_unit_features, classify_units, 
                                interpret_clusters, print_cluster_summary,
                                compare_to_baseline, select_features_by_task_dynamics)
 from src.visualization import ensure_dirs, plot_bar
@@ -196,7 +196,9 @@ def run_single_task_experiment(task_name='flipflop', architecture='vanilla',
     labels, details = classify_units(features, n_clusters=4, method='kmeans', 
                                      return_details=True)
     
-    interpretation = interpret_clusters(features, labels)
+    # Interpret clusters with appropriate feature type
+    feature_type = 'deformation' if method_used == 'deformation' else 'pca'
+    interpretation = interpret_clusters(features, labels, feature_type=feature_type)
     
     if verbose:
         print(f"  Silhouette score: {details['silhouette']:.3f}")
@@ -207,7 +209,7 @@ def run_single_task_experiment(task_name='flipflop', architecture='vanilla',
         if low_conf_count > 0:
             print(f"  ⚠️  Warning: {low_conf_count} clusters have low confidence")
         
-        print_cluster_summary(interpretation)
+        print_cluster_summary(interpretation, feature_type=feature_type)
     
     # 8. Compare to baselines (only if using deformation features)
     if verbose:
@@ -366,17 +368,27 @@ def run_single_task_experiment(task_name='flipflop', architecture='vanilla',
     return results
 
 
-def run_multi_task_comparison(tasks=['flipflop', 'cycling', 'context', 'mnist'],
+def run_multi_task_comparison(tasks=['flipflop', 'cycling', 'context', 'mnist',
+                                     'parametric', 'matchsample', 'gonogo', 'fsm'],
                                architecture='vanilla', hidden_size=128,
                                n_epochs=2000, verbose=True):
     """
     Compare unit type distributions across multiple tasks.
     
     Hypothesis: Task structure determines functional type distribution
-    - FlipFlop → Integrators (memory maintenance)
-    - Cycling → Rotators (oscillatory dynamics)
+    Tier A (Continuous - deformation should work):
     - Context → Mixed (integration + switching)
+    - Parametric → Integrators (line attractor maintenance)
+    - MatchSample → Integrators (sample storage + comparison)
     - MNIST → Integrators (visual evidence accumulation)
+    
+    Tier B (Mixed - borderline):
+    - FlipFlop → Integrators (memory maintenance, but discrete)
+    - GoNoGo → Integrators + Explorers (integration + discrete decision)
+    
+    Tier C (Discrete - deformation should fail):
+    - Cycling → Rotators (discrete periodic cycling)
+    - FSM → Fail (pure discrete state transitions)
     
     Args:
         tasks: List of task names

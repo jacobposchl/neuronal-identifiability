@@ -24,13 +24,13 @@ print("="*70)
 # Test 1: Imports
 print("\n[1/6] Testing imports...")
 try:
-    from src.rnn_models import VanillaRNN, SimpleLSTM, SimpleGRU
+    from src.models.rnn_models import VanillaRNN, SimpleLSTM, SimpleGRU
     from src.tasks import FlipFlopTask, CyclingMemoryTask, ContextIntegrationTask
-    from src.deformation_utils import (decompose_jacobian, compute_jacobian_analytical,
+    from src.core.deformation_utils import (decompose_jacobian, compute_jacobian_analytical,
                                        estimate_deformation_from_rnn, smooth_deformation_signals)
-    from src.rnn_features import (extract_rnn_unit_features, classify_units, 
+    from src.analysis.rnn_features import (extract_rnn_unit_features, classify_units, 
                                   interpret_clusters, compare_to_baseline)
-    from src.rnn_visualization import plot_training_curves, plot_latent_trajectory_3d
+    from src.visualization.rnn_visualization import plot_training_curves, plot_latent_trajectory_3d
     from src.visualization import ensure_dirs
     print("  ✓ All imports successful")
 except Exception as e:
