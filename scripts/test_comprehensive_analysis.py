@@ -153,8 +153,8 @@ def run_comprehensive_analysis(tasks=['flipflop', 'cycling'], n_seeds=10,
             print(f"  Cohen's d: {effect_size:.3f}")
         
         # Bootstrap confidence intervals
-        deformation_ci = bootstrap_ci(scores['deformation'], n_bootstrap=10000)
-        pca_ci = bootstrap_ci(scores['pca'], n_bootstrap=10000)
+        deformation_ci = bootstrap_ci(scores['deformation'], n_iterations=10000)
+        pca_ci = bootstrap_ci(scores['pca'], n_iterations=10000)
         
         if verbose:
             print(f"\nBootstrap 95% Confidence Intervals:")

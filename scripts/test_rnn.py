@@ -167,14 +167,16 @@ def run_single_task_experiment(task_name='flipflop', architecture='vanilla',
     
     if verbose:
         print(f"  Silhouette scores:")
-        print(f"    Deformation method: {baseline_comparison['deformation']:.3f}")
-        print(f"    PCA baseline:       {baseline_comparison['pca']:.3f}")
-        print(f"    Raw activations:    {baseline_comparison['raw']:.3f}")
+        print(f"    Deformation method: {baseline_comparison['deformation']['silhouette']:.3f}")
+        print(f"    PCA baseline:       {baseline_comparison['pca']['silhouette']:.3f}")
+        print(f"    Raw activations:    {baseline_comparison['raw']['silhouette']:.3f}")
         
-        improvement_pca = (baseline_comparison['deformation'] - baseline_comparison['pca']) / \
-                         (baseline_comparison['pca'] + 1e-10) * 100
-        improvement_raw = (baseline_comparison['deformation'] - baseline_comparison['raw']) / \
-                         (baseline_comparison['raw'] + 1e-10) * 100
+        deform_score = baseline_comparison['deformation']['silhouette']
+        pca_score = baseline_comparison['pca']['silhouette']
+        raw_score = baseline_comparison['raw']['silhouette']
+        
+        improvement_pca = (deform_score - pca_score) / (pca_score + 1e-10) * 100
+        improvement_raw = (deform_score - raw_score) / (raw_score + 1e-10) * 100
         
         print(f"  Improvement over PCA: {improvement_pca:+.1f}%")
         print(f"  Improvement over raw: {improvement_raw:+.1f}%")
