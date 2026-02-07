@@ -12,17 +12,20 @@ import torch.nn as nn
 from src.models.rnn_models import VanillaRNN
 
 
-def generate_integrator_weights(input_dim, hidden_dim, n_integrators, bias_value=-0.95):
+def generate_integrator_weights(input_dim, hidden_dim, n_integrators, start_idx=0, bias_value=-0.95):
     """
     Generate weights for integrator units (line attractors).
     
     Integrator units maintain information over time via eigenvalues near 1.
     Implemented via: h_t = (1-α)h_{t-1} + α·input, where α is small.
     
+    CRITICAL: Only couples within integrator block to maintain block-diagonal structure.
+    
     Args:
         input_dim: Input dimensionality
-        hidden_dim: Hidden layer size
+        hidden_dim: Hidden layer size (total, not just integrators)
         n_integrators: Number of integrator units to create
+        start_idx: Starting index in full weight matrix (for proper block placement)
         bias_value: Bias term (negative values create leak, positive create growth)
     
     Returns:
@@ -33,9 +36,13 @@ def generate_integrator_weights(input_dim, hidden_dim, n_integrators, bias_value
     # Recurrent weights: near-identity for self-connection
     Whh = np.zeros((n_integrators, hidden_dim))
     for i in range(n_integrators):
-        Whh[i, i] = 0.98  # Eigenvalue near 1 (stable integrator)
-        # Small random off-diagonal for coupling
-        Whh[i, :] += np.random.randn(hidden_dim) * 0.01
+        unit_idx = start_idx + i
+        Whh[i, unit_idx] = 0.98  # Eigenvalue near 1 (stable integrator)
+        
+        # Small random coupling ONLY within integrator block
+        for j in range(n_integrators):
+            if i != j:
+                Whh[i, start_idx + j] += np.random.randn() * 0.05
     
     # Input weights: random projection
     Why = np.random.randn(n_integrators, input_dim) * 0.3
@@ -46,17 +53,20 @@ def generate_integrator_weights(input_dim, hidden_dim, n_integrators, bias_value
     return Whh, Why, bias
 
 
-def generate_rotator_weights(input_dim, hidden_dim, n_rotators, frequency=0.3):
+def generate_rotator_weights(input_dim, hidden_dim, n_rotators, start_idx=0, frequency=0.3):
     """
     Generate weights for rotator units (oscillators).
     
     Rotator units exhibit periodic dynamics via complex conjugate eigenvalues.
     Implemented via 2D rotation matrices embedded in weight space.
     
+    CRITICAL: Only couples within rotator block to maintain block-diagonal structure.
+    
     Args:
         input_dim: Input dimensionality
-        hidden_dim: Hidden layer size
+        hidden_dim: Hidden layer size (total, not just rotators)
         n_rotators: Number of rotator units (must be even for conjugate pairs)
+        start_idx: Starting index in full weight matrix (for proper block placement)
         frequency: Oscillation frequency (radians per timestep)
     
     Returns:
@@ -70,23 +80,31 @@ def generate_rotator_weights(input_dim, hidden_dim, n_rotators, frequency=0.3):
     
     # Create rotation matrices for pairs
     for pair_idx in range(n_rotators // 2):
-        i = pair_idx * 2
-        j = i + 1
+        local_i = pair_idx * 2
+        local_j = local_i + 1
+        global_i = start_idx + local_i
+        global_j = start_idx + local_j
         
         # 2D rotation matrix with frequency ω
         omega = frequency + np.random.randn() * 0.05  # Add variance
         cos_omega = np.cos(omega)
         sin_omega = np.sin(omega)
         
-        # Embed rotation in recurrent weights
-        Whh[i, i] = cos_omega
-        Whh[i, j] = -sin_omega
-        Whh[j, i] = sin_omega
-        Whh[j, j] = cos_omega
+        # Embed rotation in recurrent weights (at correct global indices)
+        Whh[local_i, global_i] = cos_omega
+        Whh[local_i, global_j] = -sin_omega
+        Whh[local_j, global_i] = sin_omega
+        Whh[local_j, global_j] = cos_omega
         
-        # Add coupling to other units
-        Whh[i, :] += np.random.randn(hidden_dim) * 0.02
-        Whh[j, :] += np.random.randn(hidden_dim) * 0.02
+        # Weak coupling to other rotator pairs ONLY (within block)
+        for other_pair in range(n_rotators // 2):
+            if other_pair != pair_idx:
+                other_i = start_idx + other_pair * 2
+                other_j = other_i + 1
+                Whh[local_i, other_i] += np.random.randn() * 0.02
+                Whh[local_i, other_j] += np.random.randn() * 0.02
+                Whh[local_j, other_i] += np.random.randn() * 0.02
+                Whh[local_j, other_j] += np.random.randn() * 0.02
     
     # Input weights
     Why = np.random.randn(n_rotators, input_dim) * 0.2
@@ -97,17 +115,20 @@ def generate_rotator_weights(input_dim, hidden_dim, n_rotators, frequency=0.3):
     return Whh, Why, bias
 
 
-def generate_explorer_weights(input_dim, hidden_dim, n_explorers, expansion_rate=1.1):
+def generate_explorer_weights(input_dim, hidden_dim, n_explorers, start_idx=0, expansion_rate=1.1):
     """
     Generate weights for explorer units (expanding/unstable).
     
     Explorer units have eigenvalues >1, causing expansion unless constrained
     by nonlinearity (tanh saturation).
     
+    CRITICAL: Only couples within explorer block to maintain block-diagonal structure.
+    
     Args:
         input_dim: Input dimensionality
-        hidden_dim: Hidden layer size
+        hidden_dim: Hidden layer size (total, not just explorers)
         n_explorers: Number of explorer units
+        start_idx: Starting index in full weight matrix (for proper block placement)
         expansion_rate: Eigenvalue magnitude (>1 for expansion)
     
     Returns:
@@ -118,10 +139,14 @@ def generate_explorer_weights(input_dim, hidden_dim, n_explorers, expansion_rate
     Whh = np.zeros((n_explorers, hidden_dim))
     
     for i in range(n_explorers):
+        unit_idx = start_idx + i
         # Self-connection with expansion
-        Whh[i, i] = expansion_rate + np.random.randn() * 0.05
-        # Random couplings
-        Whh[i, :] += np.random.randn(hidden_dim) * 0.05
+        Whh[i, unit_idx] = expansion_rate + np.random.randn() * 0.05
+        
+        # Random couplings ONLY within explorer block
+        for j in range(n_explorers):
+            if i != j:
+                Whh[i, start_idx + j] += np.random.randn() * 0.05
     
     # Strong input weights (explorers respond to inputs)
     Why = np.random.randn(n_explorers, input_dim) * 0.5
@@ -132,24 +157,30 @@ def generate_explorer_weights(input_dim, hidden_dim, n_explorers, expansion_rate
     return Whh, Why, bias
 
 
-def generate_mixed_weights(input_dim, hidden_dim, n_mixed):
+def generate_mixed_weights(input_dim, hidden_dim, n_mixed, start_idx=0):
     """
     Generate weights for mixed/generic units.
     
     Standard random initialization without specific spectral properties.
     
+    CRITICAL: Only couples within mixed block to maintain block-diagonal structure.
+    
     Args:
         input_dim: Input dimensionality
-        hidden_dim: Hidden layer size
+        hidden_dim: Hidden layer size (total, not just mixed)
         n_mixed: Number of mixed units
+        start_idx: Starting index in full weight matrix (for proper block placement)
     
     Returns:
         Whh_mixed: (n_mixed, hidden_dim) recurrent weight matrix
         Why_mixed: (n_mixed, input_dim) input weight matrix
         bias_mixed: (n_mixed,) bias vector
     """
-    # Random orthogonal initialization
-    Whh = np.random.randn(n_mixed, hidden_dim) * 0.5 / np.sqrt(hidden_dim)
+    # Random initialization ONLY within mixed block
+    Whh = np.zeros((n_mixed, hidden_dim))
+    for i in range(n_mixed):
+        for j in range(n_mixed):
+            Whh[i, start_idx + j] = np.random.randn() * 0.5 / np.sqrt(n_mixed)
     
     # Random input weights
     Why = np.random.randn(n_mixed, input_dim) * 0.3
@@ -206,18 +237,24 @@ def build_synthetic_rnn(input_dim, hidden_size, output_dim,
     print(f"  Explorers:   {n_explorers} ({100*n_explorers/hidden_size:.1f}%)")
     print(f"  Mixed:       {n_mixed} ({100*n_mixed/hidden_size:.1f}%)")
     
-    # Generate weights for each unit type
+    # Calculate starting indices for each block
+    start_int = 0
+    start_rot = n_integrators
+    start_exp = n_integrators + n_rotators
+    start_mix = n_integrators + n_rotators + n_explorers
+    
+    # Generate weights for each unit type with proper block placement
     Whh_int, Why_int, bias_int = generate_integrator_weights(
-        input_dim, hidden_size, n_integrators
+        input_dim, hidden_size, n_integrators, start_idx=start_int
     )
     Whh_rot, Why_rot, bias_rot = generate_rotator_weights(
-        input_dim, hidden_size, n_rotators
+        input_dim, hidden_size, n_rotators, start_idx=start_rot
     )
     Whh_exp, Why_exp, bias_exp = generate_explorer_weights(
-        input_dim, hidden_size, n_explorers
+        input_dim, hidden_size, n_explorers, start_idx=start_exp
     )
     Whh_mix, Why_mix, bias_mix = generate_mixed_weights(
-        input_dim, hidden_size, n_mixed
+        input_dim, hidden_size, n_mixed, start_idx=start_mix
     )
     
     # Concatenate all weight matrices
@@ -254,10 +291,12 @@ def verify_spectral_properties(rnn, ground_truth_labels):
     """
     Verify that synthetic RNN has expected spectral properties.
     
-    Checks that eigenvalues match expected unit type characteristics:
+    Checks that eigenvalues of each BLOCK match expected unit type characteristics:
     - Integrators: Real eigenvalues near 1
     - Rotators: Complex conjugate pairs
     - Explorers: Real eigenvalues > 1
+    
+    CRITICAL FIX: Computes eigenvalues of each block separately (block-diagonal structure).
     
     Args:
         rnn: Synthetic RNN
@@ -269,38 +308,70 @@ def verify_spectral_properties(rnn, ground_truth_labels):
     # Extract recurrent weight matrix
     Whh = rnn.rnn.weight_hh_l0.detach().cpu().numpy().T  # (hidden_size, hidden_size)
     
-    # Compute eigenvalues
-    eigenvalues = np.linalg.eigvals(Whh)
-    
-    # Separate by label
+    # Get block sizes
     n_integrators = np.sum(ground_truth_labels == 0)
     n_rotators = np.sum(ground_truth_labels == 1)
     n_explorers = np.sum(ground_truth_labels == 2)
+    n_mixed = np.sum(ground_truth_labels == 3)
     
-    # Integrator eigenvalues (first n_integrators)
-    eig_int = eigenvalues[:n_integrators]
-    int_real = np.sum(np.abs(eig_int.imag) < 0.1) / len(eig_int)
-    int_near_one = np.sum(np.abs(np.abs(eig_int) - 1.0) < 0.1) / len(eig_int)
+    # Extract each block from the weight matrix
+    start_int = 0
+    start_rot = n_integrators
+    start_exp = n_integrators + n_rotators
+    start_mix = n_integrators + n_rotators + n_explorers
     
-    # Rotator eigenvalues
-    eig_rot = eigenvalues[n_integrators:n_integrators + n_rotators]
-    rot_complex = np.sum(np.abs(eig_rot.imag) > 0.1) / len(eig_rot)
+    # Integrator block
+    Whh_int = Whh[start_int:start_int+n_integrators, start_int:start_int+n_integrators]
+    eig_int = np.linalg.eigvals(Whh_int)
+    int_real = np.sum(np.abs(eig_int.imag) < 0.1) / len(eig_int) if len(eig_int) > 0 else 0
+    int_near_one = np.sum(np.abs(np.abs(eig_int) - 1.0) < 0.1) / len(eig_int) if len(eig_int) > 0 else 0
     
-    # Explorer eigenvalues
-    eig_exp = eigenvalues[n_integrators + n_rotators:n_integrators + n_rotators + n_explorers]
-    exp_large = np.sum(np.abs(eig_exp) > 1.05) / len(eig_exp)
+    # Rotator block
+    Whh_rot = Whh[start_rot:start_rot+n_rotators, start_rot:start_rot+n_rotators]
+    eig_rot = np.linalg.eigvals(Whh_rot)
+    rot_complex = np.sum(np.abs(eig_rot.imag) > 0.1) / len(eig_rot) if len(eig_rot) > 0 else 0
+    
+    # Explorer block
+    Whh_exp = Whh[start_exp:start_exp+n_explorers, start_exp:start_exp+n_explorers]
+    eig_exp = np.linalg.eigvals(Whh_exp)
+    exp_large = np.sum(np.abs(eig_exp) > 1.05) / len(eig_exp) if len(eig_exp) > 0 else 0
+    
+    # Verify block-diagonal structure (should have near-zero off-block elements)
+    off_block_magnitude = 0
+    total_off_block = 0
+    
+    # Check integrator-rotator coupling
+    if n_integrators > 0 and n_rotators > 0:
+        off_block_magnitude += np.sum(np.abs(Whh[start_int:start_int+n_integrators, start_rot:start_rot+n_rotators]))
+        total_off_block += n_integrators * n_rotators
+    
+    # Check integrator-explorer coupling
+    if n_integrators > 0 and n_explorers > 0:
+        off_block_magnitude += np.sum(np.abs(Whh[start_int:start_int+n_integrators, start_exp:start_exp+n_explorers]))
+        total_off_block += n_integrators * n_explorers
+    
+    # Check rotator-explorer coupling
+    if n_rotators > 0 and n_explorers > 0:
+        off_block_magnitude += np.sum(np.abs(Whh[start_rot:start_rot+n_rotators, start_exp:start_exp+n_explorers]))
+        total_off_block += n_rotators * n_explorers
+    
+    avg_off_block = off_block_magnitude / total_off_block if total_off_block > 0 else 0
     
     report = {
         'integrator_are_real': int_real,
         'integrator_near_one': int_near_one,
         'rotator_are_complex': rot_complex,
         'explorer_are_large': exp_large,
-        'all_eigenvalues': eigenvalues
+        'block_diagonal_quality': 1.0 - min(1.0, avg_off_block),  # 1.0 = perfect block diagonal
+        'integrator_eigenvalues': eig_int,
+        'rotator_eigenvalues': eig_rot,
+        'explorer_eigenvalues': eig_exp
     }
     
     print(f"\nSpectral Property Verification:")
     print(f"  Integrators: {int_real*100:.1f}% real, {int_near_one*100:.1f}% near |λ|=1")
     print(f"  Rotators:    {rot_complex*100:.1f}% complex")
     print(f"  Explorers:   {exp_large*100:.1f}% |λ| > 1.05")
+    print(f"  Block-diagonal quality: {report['block_diagonal_quality']*100:.1f}% (avg off-block weight: {avg_off_block:.4f})")
     
     return report
