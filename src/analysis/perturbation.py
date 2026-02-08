@@ -198,12 +198,13 @@ def cross_task_transfer(rnn_task_a, task_a, task_b, unit_labels, interpretation,
     if task_a.input_size != task_b.input_size or task_a.output_size != task_b.output_size:
         if verbose:
             print(f"\n⚠️  ERROR: Incompatible task dimensions!")
-            print(f"   Task A: input={task_a.input_size}, output={task_a.output_size}")
-            print(f"   Task B: input={task_b.input_size}, output={task_b.output_size}")
+            print(f"   {task_a.__class__.__name__}: input={task_a.input_size}, output={task_a.output_size}")
+            print(f"   {task_b.__class__.__name__}: input={task_b.input_size}, output={task_b.output_size}")
             print(f"\n   Cross-task transfer requires matching dimensions.")
-            print(f"   Recommendation: Choose compatible tasks:")
-            print(f"   - context, parametric (both continuous tasks)")
-            print(f"   - OR implement transfer learning (fine-tune Task A RNN on Task B)")
+            print(f"   Compatible task pairs:")
+            print(f"   - Two instances of same task (e.g., two Context tasks)")
+            print(f"   - Context(n_contexts=1) + Parametric (both input=2, output=1)")
+            print(f"   Note: Most tasks have unique dimensions by design.")
         return None
     
     # Baseline: Task A's RNN tested on Task B inputs

@@ -18,6 +18,8 @@ sys.path.insert(0, str(project_root))
 
 from src.models.rnn_models import VanillaRNN
 from src.tasks import get_task
+from src.tasks.tasks import (ContextIntegrationTask, ParametricWorkingMemoryTask, 
+                               FlipFlopTask, GoNoGoTask)
 from src.core.deformation_utils import estimate_deformation_from_rnn, smooth_deformation_signals
 from src.analysis.rnn_features import (extract_rnn_unit_features, classify_units, 
                                interpret_clusters, select_features_by_task_dynamics)
@@ -164,6 +166,60 @@ def run_importance_analysis(task_name='context', hidden_size=128,
     return importance_results
 
 
+def make_tasks_compatible(task_a_name, task_b_name):
+    """
+    Create compatible task instances by adjusting parameters if needed.
+    
+    Args:
+        task_a_name: Name of task A
+        task_b_name: Name of task B
+    
+    Returns:
+        (task_a, task_b, modified): Tuple of task instances and whether they were modified
+    """
+    # Try default tasks first
+    task_a = get_task(task_a_name)
+    task_b = get_task(task_b_name)
+    
+    # Check if already compatible
+    if (task_a.input_size == task_b.input_size and 
+        task_a.output_size == task_b.output_size):
+        return task_a, task_b, False
+    
+    # Known compatible combinations with parameter adjustments
+    compatible_pairs = {
+        ('context', 'parametric'): (
+            ContextIntegrationTask(n_contexts=1),  # input=2, output=1
+            ParametricWorkingMemoryTask(),          # input=2, output=1
+            "Context(n_contexts=1) + Parametric"
+        ),
+        ('parametric', 'context'): (
+            ParametricWorkingMemoryTask(),          # input=2, output=1
+            ContextIntegrationTask(n_contexts=1),  # input=2, output=1
+            "Parametric + Context(n_contexts=1)"
+        ),
+        ('flipflop', 'gonogo'): (
+            FlipFlopTask(n_bits=1),  # input=1, output=1
+            GoNoGoTask(),             # input=1, output=1
+            "FlipFlop(n_bits=1) + GoNoGo"
+        ),
+        ('gonogo', 'flipflop'): (
+            GoNoGoTask(),             # input=1, output=1
+            FlipFlopTask(n_bits=1),  # input=1, output=1
+            "GoNoGo + FlipFlop(n_bits=1)"
+        ),
+    }
+    
+    pair_key = (task_a_name.lower(), task_b_name.lower())
+    
+    if pair_key in compatible_pairs:
+        task_a_compat, task_b_compat, description = compatible_pairs[pair_key]
+        return task_a_compat, task_b_compat, description
+    
+    # No compatible configuration found
+    return task_a, task_b, None
+
+
 def run_transfer_analysis(task_a='context', task_b='parametric',
                           hidden_size=128, n_epochs=2000, verbose=True):
     """
@@ -171,6 +227,8 @@ def run_transfer_analysis(task_a='context', task_b='parametric',
     
     Tests if units classified on Task A also matter for Task B performance.
     Uses the SAME RNN (trained on Task A) and tests on Task B inputs.
+    
+    Automatically adjusts task parameters to ensure compatibility when possible.
     
     Args:
         task_a: Training task (where units are classified)
@@ -186,21 +244,27 @@ def run_transfer_analysis(task_a='context', task_b='parametric',
     print(f"CROSS-TASK TRANSFER: {task_a.upper()} → {task_b.upper()}")
     print("="*70)
     
-    # Check dimension compatibility before training
-    task_obj_a = get_task(task_a)
-    task_obj_b = get_task(task_b)
+    # Create compatible task instances (auto-adjusts parameters if needed)
+    task_obj_a, task_obj_b, modification = make_tasks_compatible(task_a, task_b)
     
+    # Check if tasks are compatible
     if (task_obj_a.input_size != task_obj_b.input_size or 
         task_obj_a.output_size != task_obj_b.output_size):
         print(f"\n⚠️  ERROR: Incompatible task dimensions!")
         print(f"   {task_a}: input={task_obj_a.input_size}, output={task_obj_a.output_size}")
         print(f"   {task_b}: input={task_obj_b.input_size}, output={task_obj_b.output_size}")
-        print(f"\n   Cross-task transfer requires matching dimensions.")
-        print(f"   Compatible task pairs:")
-        print(f"   - flipflop + cycling (both input=3, output=3)")
-        print(f"   - Two context tasks with same n_contexts parameter")
-        print(f"   Note: Most tasks have unique dimensions.")
+        print(f"\n   No automatic compatibility fix available for this pair.")
+        print(f"\n   Try these compatible pairs:")
+        print(f"   - context + parametric (auto-adjusted)")
+        print(f"   - flipflop + gonogo (auto-adjusted)")
+        print(f"   - Two instances of same task")
         return None
+    
+    # Notify if tasks were modified
+    if modification:
+        print(f"\n💡 Auto-adjusted parameters for compatibility:")
+        print(f"   Using: {modification}")
+        print(f"   Dimensions: input={task_obj_a.input_size}, output={task_obj_a.output_size}")
     
     # 1. Train RNN on Task A
     rnn_a = VanillaRNN(task_obj_a.input_size, hidden_size, task_obj_a.output_size)
@@ -236,8 +300,6 @@ def run_transfer_analysis(task_a='context', task_b='parametric',
     interpretation_a = interpret_clusters(features_a, unit_labels_a, feature_type='deformation')
     
     # 3. Test transfer to Task B
-    task_obj_b = get_task(task_b)
-    
     transfer_results = cross_task_transfer(
         rnn_a, task_obj_a, task_obj_b, unit_labels_a, interpretation_a,
         n_test_trials=50, verbose=verbose)
