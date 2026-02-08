@@ -137,11 +137,10 @@ def evaluate_rnn_performance(rnn, task, n_trials=50):
         n_trials: Number of test trials
     
     Returns:
-        accuracy: Percentage accuracy
+        accuracy: Percentage accuracy (0-100)
     """
     rnn.eval()
-    total_correct = 0
-    total_samples = 0
+    total_r2 = 0.0
     
     with torch.no_grad():
         for _ in range(n_trials):
@@ -151,12 +150,13 @@ def evaluate_rnn_performance(rnn, task, n_trials=50):
             # Forward pass
             outputs = rnn(inputs, return_hidden_states=False)
             
-            # Compute accuracy
-            accuracy = task._compute_accuracy(outputs, targets)
-            total_correct += accuracy
-            total_samples += 1
+            # Compute R² accuracy (returns 0-1)
+            r2_score = task._compute_accuracy(outputs, targets)
+            total_r2 += r2_score
     
-    return (total_correct / total_samples) * 100
+    # Return average R² as percentage
+    avg_r2 = total_r2 / n_trials
+    return avg_r2 * 100
 
 
 def cross_task_transfer(rnn_task_a, task_a, task_b, unit_labels, interpretation,

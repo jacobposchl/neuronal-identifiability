@@ -73,10 +73,42 @@ def run_importance_analysis(task_name='context', hidden_size=128,
         print("Cannot perform perturbation analysis without unit classifications")
         return None
     
-    # Cluster units
+    # Test different cluster sizes to find optimal K
+    if verbose:
+        print(f"\n  Testing different cluster sizes (K=2 to 6):")
+        from sklearn.metrics import silhouette_score
+        for k in range(2, 7):
+            labels_test, _ = classify_units(features, n_clusters=k, return_details=False)
+            sil_score = silhouette_score(features, labels_test) if len(np.unique(labels_test)) > 1 else 0
+            cluster_sizes = [np.sum(labels_test == i) for i in range(k)]
+            max_size = max(cluster_sizes)
+            max_pct = 100 * max_size / len(labels_test)
+            print(f"    K={k}: silhouette={sil_score:.3f}, largest cluster={max_size:3d} ({max_pct:4.1f}%)")
+    
+    # Cluster units with K=4
+    print(f"\n  Using K=4 clusters for analysis:")
     unit_labels, details = classify_units(features, n_clusters=4, return_details=True)
     cluster_centers = details['centers']
     interpretation = interpret_clusters(features, unit_labels, feature_type='deformation')
+    
+    # Print clustering diagnostics
+    if verbose:
+        print(f"\nClustering diagnostics:")
+        print(f"  Silhouette score: {details['silhouette']:.3f} (<0.3=poor, >0.5=good)")
+        print(f"  Feature statistics:")
+        print(f"    Rotation    - mean: {np.mean(features[:, 0]):.3f}, std: {np.std(features[:, 0]):.3f}")
+        print(f"    Contraction - mean: {np.mean(features[:, 1]):.3f}, std: {np.std(features[:, 1]):.3f}")
+        print(f"    Expansion   - mean: {np.mean(features[:, 2]):.3f}, std: {np.std(features[:, 2]):.3f}")
+        print(f"\n  Cluster distribution:")
+        for label in sorted(np.unique(unit_labels)):
+            type_name = interpretation[label]['name']
+            n_units = np.sum(unit_labels == label)
+            pct = 100 * n_units / len(unit_labels)
+            print(f"    Cluster {label} ({type_name:20s}): {n_units:3d} units ({pct:5.1f}%)")
+        
+        if details['silhouette'] < 0.3:
+            print(f"\n  ⚠ WARNING: Low silhouette score suggests weak clustering structure!")
+            print(f"     Clusters may not represent distinct functional types.")
     
     # 3. Test importance via ablation
     importance_results = test_unit_importance(
