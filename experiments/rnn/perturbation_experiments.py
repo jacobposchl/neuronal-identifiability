@@ -78,7 +78,7 @@ def run_importance_analysis(task_name='context', hidden_size=128,
         print(f"\n  Testing different cluster sizes (K=2 to 6):")
         from sklearn.metrics import silhouette_score
         for k in range(2, 7):
-            labels_test, _ = classify_units(features, n_clusters=k, return_details=False)
+            labels_test = classify_units(features, n_clusters=k, return_details=False)
             sil_score = silhouette_score(features, labels_test) if len(np.unique(labels_test)) > 1 else 0
             cluster_sizes = [np.sum(labels_test == i) for i in range(k)]
             max_size = max(cluster_sizes)
@@ -155,9 +155,10 @@ def run_transfer_analysis(task_a='context', task_b='parametric',
         print(f"   {task_a}: input={task_obj_a.input_size}, output={task_obj_a.output_size}")
         print(f"   {task_b}: input={task_obj_b.input_size}, output={task_obj_b.output_size}")
         print(f"\n   Cross-task transfer requires matching dimensions.")
-        print(f"   Recommendation: Choose compatible tasks:")
-        print(f"   - context, parametric (both continuous tasks)")
-        print(f"   - matchsample (has similar structure)")
+        print(f"   Compatible task pairs:")
+        print(f"   - flipflop + cycling (both input=3, output=3)")
+        print(f"   - Two context tasks with same n_contexts parameter")
+        print(f"   Note: Most tasks have unique dimensions.")
         return None
     
     # 1. Train RNN on Task A
