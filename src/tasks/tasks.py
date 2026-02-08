@@ -569,6 +569,26 @@ class ParametricWorkingMemoryTask(TaskBase):
         
         return inputs, targets
     
+    def _compute_accuracy(self, outputs, targets):
+        """R² accuracy only during recall period (when targets are non-zero)."""
+        # Only evaluate where target is non-zero (recall period)
+        mask = (targets != 0).float()
+        if mask.sum() == 0:
+            return 0.0
+        
+        # Compute MSE only during recall
+        masked_outputs = outputs * mask
+        masked_targets = targets * mask
+        mse = torch.sum((masked_outputs - masked_targets) ** 2) / mask.sum()
+        
+        # Variance of targets during recall
+        mean_target = masked_targets.sum() / mask.sum()
+        target_var = torch.sum(((targets - mean_target) ** 2) * mask) / mask.sum()
+        
+        # R² score
+        r2 = 1 - (mse / (target_var + 1e-10))
+        return max(0, min(1, r2.item()))  # Clamp to [0, 1]
+    
     def get_expected_dynamics(self):
         return ("Contraction-dominant: Line attractor for continuous value storage\n"
                 "Expected: Stable manifold for parametric memory maintenance\n"

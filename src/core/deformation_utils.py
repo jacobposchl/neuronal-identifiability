@@ -27,6 +27,8 @@ def decompose_jacobian(J):
         rotation: Magnitude of rotational component (Frobenius norm of A)
         contraction: Sum of negative eigenvalues of S (compression strength)
         expansion: Sum of positive eigenvalues of S (expansion strength)
+        
+    Note: Returns (0, 0, 0) if Jacobian contains NaN/Inf (numerical instability)
     """
     # Handle both numpy and torch
     is_torch = isinstance(J, torch.Tensor)
@@ -34,6 +36,10 @@ def decompose_jacobian(J):
         J_np = J.detach().cpu().numpy()
     else:
         J_np = J
+    
+    # Check for numerical issues
+    if not np.all(np.isfinite(J_np)):
+        return 0.0, 0.0, 0.0
     
     # Symmetric and antisymmetric parts
     S = 0.5 * (J_np + J_np.T)
@@ -43,9 +49,18 @@ def decompose_jacobian(J):
     rotation = np.linalg.norm(A, 'fro')
     
     # Contraction/Expansion: eigenvalues of symmetric part
-    eigenvalues = np.linalg.eigvalsh(S)
-    contraction = -np.sum(eigenvalues[eigenvalues < 0])
-    expansion = np.sum(eigenvalues[eigenvalues > 0])
+    try:
+        eigenvalues = np.linalg.eigvalsh(S)
+        contraction = -np.sum(eigenvalues[eigenvalues < 0])
+        expansion = np.sum(eigenvalues[eigenvalues > 0])
+    except np.linalg.LinAlgError:
+        # Eigenvalue computation failed (very ill-conditioned)
+        return 0.0, 0.0, 0.0
+    
+    # Sanity check: clip extreme values (suggests numerical instability)
+    MAX_REASONABLE = 1e6
+    if rotation > MAX_REASONABLE or contraction > MAX_REASONABLE or expansion > MAX_REASONABLE:
+        return 0.0, 0.0, 0.0
     
     return rotation, contraction, expansion
 
@@ -237,6 +252,13 @@ def estimate_deformation_from_latents(latent_trajectory, dt=0.01, n_samples=200,
         print("  Deformation estimation failed - returning None")
         return None, None, None
     
+    # Warn if many samples were clipped to zero (numerical instability)
+    zero_frac = np.mean([s == 0.0 for s in rotation_samples])
+    if zero_frac > 0.5:
+        print(f"  ⚠️  Warning: {zero_frac:.0%} of Jacobians were numerically unstable (clipped to zero)")
+        print(f"  This suggests latent_dim ({latent_dim}) is too high for stable estimation")
+        print(f"  Consider using fewer dimensions (≤8) or lower variance_threshold")
+    
     return rotation_trajectory, contraction_trajectory, expansion_trajectory
 
 
@@ -288,14 +310,21 @@ def estimate_deformation_from_rnn(hidden_states, rnn=None, dt=0.01,
             
             # Find minimum components to reach threshold
             n_components = np.argmax(cumulative_variance >= variance_threshold) + 1
-            n_components = max(3, min(n_components, n_units // 2))  # Clamp to [3, n_units/2]
+            # CRITICAL: Cap at 8 for numerical stability of Jacobian estimation
+            # Higher dimensions cause ill-conditioned local linear regression
+            n_components = max(3, min(n_components, 8))
             
             if verbose:
                 print(f"  PCA auto-selection: {n_components} components ")
                 print(f"    Variance explained: {cumulative_variance[n_components-1]:.1%}")
                 print(f"    Top 5 PC variances: {pca_full.explained_variance_ratio_[:5]}")
+                if cumulative_variance[n_components-1] < variance_threshold:
+                    shortfall = variance_threshold - cumulative_variance[n_components-1]
+                    print(f"  ⚠️  Capped at 8 dims for stability (missing {shortfall:.1%} variance)")
         else:
             n_components = int(latent_dim)
+            if n_components > 8 and verbose:
+                print(f"  ⚠️  Warning: {n_components}D Jacobian may be numerically unstable (recommend ≤8)")
         
         # Project to low-dimensional latent space
         pca = PCA(n_components=n_components)
