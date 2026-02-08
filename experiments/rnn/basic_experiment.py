@@ -29,6 +29,7 @@ from src.visualization import ensure_dirs, plot_bar
 def run_single_task_experiment(task_name='flipflop', architecture='vanilla',
                                 hidden_size=128, n_epochs=2000, lr=0.001,
                                 n_trials=50, trial_length=200,
+                                latent_dim='auto', variance_threshold=0.90,
                                 save_checkpoint=True, verbose=True):
     """
     Run complete experiment on a single task.
@@ -50,6 +51,8 @@ def run_single_task_experiment(task_name='flipflop', architecture='vanilla',
         lr: Learning rate
         n_trials: Number of test trials for trajectory extraction
         trial_length: Length of each trial
+        latent_dim: PCA dimensionality ('auto' or int, default 'auto')
+        variance_threshold: Variance threshold for auto PCA (default 0.90)
         save_checkpoint: Whether to save trained model
         verbose: Print progress
     
@@ -120,7 +123,8 @@ def run_single_task_experiment(task_name='flipflop', architecture='vanilla',
         print(f"\nEstimating deformation from hidden states...")
     
     rotation_traj, contraction_traj, expansion_traj, latent_traj = estimate_deformation_from_rnn(
-        hidden_states, rnn=None, dt=0.01, latent_dim=3, method='pca_then_local'
+        hidden_states, rnn=None, dt=0.01, latent_dim=latent_dim, 
+        variance_threshold=variance_threshold, method='pca_then_local', verbose=verbose
     )
     
     # Smooth deformation signals (handles None returns)
@@ -456,7 +460,8 @@ def main():
     parser = argparse.ArgumentParser(description='RNN deformation-based unit classification')
     
     parser.add_argument('--task', type=str, default='flipflop',
-                       choices=['flipflop', 'cycling', 'context', 'all'],
+                       choices=['flipflop', 'cycling', 'context', 'mnist',
+                                'parametric', 'matchsample', 'gonogo', 'fsm', 'all'],
                        help='Task to run (or "all" for multi-task comparison)')
     parser.add_argument('--architecture', type=str, default='vanilla',
                        choices=['vanilla', 'lstm', 'gru'],
@@ -471,12 +476,26 @@ def main():
                        help='Number of test trials')
     parser.add_argument('--trial-length', type=int, default=200,
                        help='Length of each trial')
+    parser.add_argument('--latent-dim', type=str, default='auto',
+                       help='PCA latent dimensions ("auto" or integer, default: auto)')
+    parser.add_argument('--variance-threshold', type=float, default=0.90,
+                       help='Variance threshold for auto PCA selection (default: 0.90)')
     parser.add_argument('--no-save', action='store_true',
                        help='Do not save checkpoint')
     parser.add_argument('--quiet', action='store_true',
                        help='Minimal output')
     
     args = parser.parse_args()
+    
+    # Parse latent_dim (can be 'auto' or integer)
+    if args.latent_dim.lower() == 'auto':
+        latent_dim = 'auto'
+    else:
+        try:
+            latent_dim = int(args.latent_dim)
+        except ValueError:
+            print(f"Invalid latent_dim: {args.latent_dim}. Using 'auto'.")
+            latent_dim = 'auto'
     
     if args.task == 'all':
         run_multi_task_comparison(
@@ -495,6 +514,8 @@ def main():
             lr=args.lr,
             n_trials=args.trials,
             trial_length=args.trial_length,
+            latent_dim=latent_dim,
+            variance_threshold=args.variance_threshold,
             save_checkpoint=not args.no_save,
             verbose=not args.quiet
         )

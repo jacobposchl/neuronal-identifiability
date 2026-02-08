@@ -241,7 +241,8 @@ def estimate_deformation_from_latents(latent_trajectory, dt=0.01, n_samples=200,
 
 
 def estimate_deformation_from_rnn(hidden_states, rnn=None, dt=0.01, 
-                                   latent_dim=3, method='pca_then_local'):
+                                   latent_dim='auto', method='pca_then_local', 
+                                   variance_threshold=0.90, verbose=False):
     """
     Estimate deformation signals from RNN hidden state trajectories.
     
@@ -253,8 +254,14 @@ def estimate_deformation_from_rnn(hidden_states, rnn=None, dt=0.01,
         hidden_states: (n_units, n_timesteps) RNN hidden activations
         rnn: Optional RNN model for analytical Jacobian (not used if None)
         dt: Timestep size
-        latent_dim: Dimensionality of latent space (default 3 for R, C, E)
+        latent_dim: Dimensionality of latent space. Options:
+                    - 'auto': Select to capture variance_threshold of variance (recommended)
+                    - int: Fixed number of components (e.g., 3, 5, 10)
+                    Default 'auto' (replaces old hardcoded default of 3)
+        variance_threshold: If latent_dim='auto', keep enough PCs to explain this 
+                           fraction of variance (default 0.90 = 90%)
         method: 'pca_then_local' (estimate from PCA) or 'analytical' (use RNN Jacobian)
+        verbose: Print PCA diagnostics
     
     Returns:
         rotation_trajectory: (n_timesteps,) rotation magnitude over time
@@ -272,9 +279,34 @@ def estimate_deformation_from_rnn(hidden_states, rnn=None, dt=0.01,
         print(f"  RNN may have learned a trivial solution with minimal dynamics")
     
     if method == 'pca_then_local':
+        # Determine optimal latent dimensionality
+        if latent_dim == 'auto':
+            # Fit PCA with all components to check variance
+            pca_full = PCA()
+            pca_full.fit(hidden_states.T)
+            cumulative_variance = np.cumsum(pca_full.explained_variance_ratio_)
+            
+            # Find minimum components to reach threshold
+            n_components = np.argmax(cumulative_variance >= variance_threshold) + 1
+            n_components = max(3, min(n_components, n_units // 2))  # Clamp to [3, n_units/2]
+            
+            if verbose:
+                print(f"  PCA auto-selection: {n_components} components ")
+                print(f"    Variance explained: {cumulative_variance[n_components-1]:.1%}")
+                print(f"    Top 5 PC variances: {pca_full.explained_variance_ratio_[:5]}")
+        else:
+            n_components = int(latent_dim)
+        
         # Project to low-dimensional latent space
-        pca = PCA(n_components=latent_dim)
-        latent_trajectory = pca.fit_transform(hidden_states.T)  # (n_timesteps, latent_dim)
+        pca = PCA(n_components=n_components)
+        latent_trajectory = pca.fit_transform(hidden_states.T)  # (n_timesteps, n_components)
+        
+        # Report variance captured
+        variance_explained = np.sum(pca.explained_variance_ratio_)
+        if verbose or (isinstance(latent_dim, int) and variance_explained < 0.80):
+            print(f"  PCA: {n_components} components explain {variance_explained:.1%} of variance")
+            if variance_explained < 0.80:
+                print(f"  ⚠️  Warning: Low variance captured (<80%) - deformation estimates may be unreliable")
         
         # Estimate deformation from latent trajectory
         rotation_traj, contraction_traj, expansion_traj = estimate_deformation_from_latents(
