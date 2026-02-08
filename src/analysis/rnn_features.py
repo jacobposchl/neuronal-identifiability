@@ -9,6 +9,132 @@ import numpy as np
 from scipy.ndimage import gaussian_filter1d
 
 
+def select_optimal_clusters(features, min_clusters=2, max_clusters=8, 
+                            method='silhouette', verbose=False):
+    """
+    Determine optimal number of clusters using multiple criteria.
+    
+    Methods:
+    - 'silhouette': Maximize silhouette score (cluster quality)
+    - 'elbow': Find elbow in inertia curve (diminishing returns)
+    - 'bic': Minimize BIC (Bayesian Information Criterion)
+    - 'combined': Weight multiple criteria
+    
+    Args:
+        features: (n_units, 3) feature array
+        min_clusters: Minimum number of clusters to test (default: 2)
+        max_clusters: Maximum number of clusters to test (default: 8)
+        method: Selection method ('silhouette', 'elbow', 'bic', 'combined')
+        verbose: Print diagnostic information
+    
+    Returns:
+        optimal_k: Recommended number of clusters
+        scores: Dict with all scores for each k value
+    """
+    from sklearn.cluster import KMeans
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.metrics import silhouette_score
+    
+    n_units = features.shape[0]
+    
+    # Limit max_clusters to reasonable values
+    max_clusters = min(max_clusters, n_units - 1)
+    
+    if max_clusters < min_clusters:
+        if verbose:
+            print(f"  Warning: Not enough units ({n_units}) for cluster selection")
+        return min_clusters, {}
+    
+    # Normalize features
+    scaler = StandardScaler()
+    features_norm = scaler.fit_transform(features)
+    
+    # Test different cluster numbers
+    k_values = range(min_clusters, max_clusters + 1)
+    silhouette_scores = []
+    inertias = []
+    bic_scores = []
+    
+    for k in k_values:
+        kmeans = KMeans(n_clusters=k, random_state=42, n_init=20)
+        labels = kmeans.fit_predict(features_norm)
+        
+        # Silhouette score (higher is better)
+        if len(np.unique(labels)) >= 2:
+            try:
+                sil_score = silhouette_score(features_norm, labels)
+            except:
+                sil_score = -1.0
+        else:
+            sil_score = -1.0
+        silhouette_scores.append(sil_score)
+        
+        # Inertia (for elbow method - lower is better)
+        inertias.append(kmeans.inertia_)
+        
+        # BIC approximation (lower is better)
+        # BIC = -2 * log-likelihood + k * log(n)
+        # For k-means, use inertia as proxy for -log-likelihood
+        bic = kmeans.inertia_ + k * np.log(n_units)
+        bic_scores.append(bic)
+    
+    # Select optimal k based on method
+    if method == 'silhouette':
+        optimal_k = k_values[np.argmax(silhouette_scores)]
+        if verbose:
+            print(f"  Silhouette method: k={optimal_k} (score={max(silhouette_scores):.3f})")
+    
+    elif method == 'elbow':
+        # Find elbow using second derivative
+        inertias_arr = np.array(inertias)
+        # Normalize to [0, 1]
+        inertias_norm = (inertias_arr - inertias_arr.min()) / (inertias_arr.max() - inertias_arr.min() + 1e-10)
+        # Compute second derivative
+        if len(inertias_norm) >= 3:
+            second_deriv = np.diff(inertias_norm, n=2)
+            # Elbow is where curvature is maximum (most negative second derivative)
+            elbow_idx = np.argmin(second_deriv)
+            optimal_k = k_values[elbow_idx + 1]  # +1 because diff reduces length
+        else:
+            optimal_k = min_clusters
+        if verbose:
+            print(f"  Elbow method: k={optimal_k}")
+    
+    elif method == 'bic':
+        optimal_k = k_values[np.argmin(bic_scores)]
+        if verbose:
+            print(f"  BIC method: k={optimal_k} (BIC={min(bic_scores):.1f})")
+    
+    elif method == 'combined':
+        # Weight multiple criteria (normalized to [0, 1])
+        sil_norm = np.array(silhouette_scores)
+        sil_norm = (sil_norm - sil_norm.min()) / (sil_norm.max() - sil_norm.min() + 1e-10)
+        
+        inertia_norm = np.array(inertias)
+        inertia_norm = 1 - (inertia_norm - inertia_norm.min()) / (inertia_norm.max() - inertia_norm.min() + 1e-10)
+        
+        bic_norm = np.array(bic_scores)
+        bic_norm = 1 - (bic_norm - bic_norm.min()) / (bic_norm.max() - bic_norm.min() + 1e-10)
+        
+        # Combined score (equal weights)
+        combined = 0.5 * sil_norm + 0.3 * inertia_norm + 0.2 * bic_norm
+        optimal_k = k_values[np.argmax(combined)]
+        if verbose:
+            print(f"  Combined method: k={optimal_k} (score={max(combined):.3f})")
+    
+    else:
+        raise ValueError(f"Unknown method: {method}")
+    
+    scores = {
+        'k_values': list(k_values),
+        'silhouette': silhouette_scores,
+        'inertia': inertias,
+        'bic': bic_scores
+    }
+    
+    return optimal_k, scores
+
+
 def extract_rnn_unit_features(hidden_states, rotation_trajectory, 
                                contraction_trajectory, expansion_trajectory,
                                smooth_sigma=5, use_abs=True, normalize=True):

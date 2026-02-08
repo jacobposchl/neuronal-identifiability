@@ -14,12 +14,15 @@ from src.models.rnn_models import VanillaRNN
 
 def ablate_units(rnn, unit_indices, method='zero'):
     """
-    Ablate specific units in RNN.
+    Ablate specific units in RNN by forcing them to zero activation.
+    
+    Strategy: Zero inputs to ablated units AND their output layer contributions.
+    This cleanly removes units without cascade effects on recurrent dynamics.
     
     Args:
         rnn: RNN model
         unit_indices: List of unit indices to ablate
-        method: 'zero' (zero weights) or 'noise' (add noise)
+        method: 'zero' (force units to zero) or 'noise' (add noise)
     
     Returns:
         ablated_rnn: New RNN with specified units removed
@@ -27,27 +30,27 @@ def ablate_units(rnn, unit_indices, method='zero'):
     ablated_rnn = copy.deepcopy(rnn)
     
     if method == 'zero':
-        # Zero out all connections to/from ablated units
         with torch.no_grad():
-            # Recurrent connections
-            ablated_rnn.rnn.weight_hh_l0[:, unit_indices] = 0  # Inputs to ablated units
-            ablated_rnn.rnn.weight_hh_l0[unit_indices, :] = 0  # Outputs from ablated units
-            
-            # Input connections
-            ablated_rnn.rnn.weight_ih_l0[unit_indices, :] = 0
-            
-            # Biases
+            # Zero ALL inputs to ablated units (they'll always output 0)
+            ablated_rnn.rnn.weight_hh_l0[:, unit_indices] = 0  # Recurrent inputs
+            ablated_rnn.rnn.weight_ih_l0[unit_indices, :] = 0  # External inputs
             ablated_rnn.rnn.bias_hh_l0[unit_indices] = 0
             ablated_rnn.rnn.bias_ih_l0[unit_indices] = 0
+            
+            # Also zero output layer weights from ablated units
+            # This prevents 0*weight accumulation artifacts
+            ablated_rnn.fc.weight[:, unit_indices] = 0
+            
+            # Result: ablated units contribute exactly 0 to all computations
     
     elif method == 'noise':
-        # Add strong noise to ablated units
+        # Add strong noise to ablated units' inputs
         with torch.no_grad():
             noise_scale = 10.0
             ablated_rnn.rnn.weight_hh_l0[:, unit_indices] += torch.randn_like(
                 ablated_rnn.rnn.weight_hh_l0[:, unit_indices]) * noise_scale
-            ablated_rnn.rnn.weight_hh_l0[unit_indices, :] += torch.randn_like(
-                ablated_rnn.rnn.weight_hh_l0[unit_indices, :]) * noise_scale
+            ablated_rnn.rnn.weight_ih_l0[unit_indices, :] += torch.randn_like(
+                ablated_rnn.rnn.weight_ih_l0[unit_indices, :]) * noise_scale
     
     return ablated_rnn
 

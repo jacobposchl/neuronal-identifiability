@@ -21,7 +21,8 @@ from src.core.deformation_utils import (estimate_deformation_from_rnn, smooth_de
                                     detect_discrete_dynamics, validate_task_dynamics)
 from src.analysis.rnn_features import (extract_rnn_unit_features, classify_units, 
                                interpret_clusters, print_cluster_summary,
-                               compare_to_baseline, select_features_by_task_dynamics)
+                               compare_to_baseline, select_features_by_task_dynamics,
+                               select_optimal_clusters)
 from src.visualization import ensure_dirs, plot_bar
 
 
@@ -189,16 +190,29 @@ def run_single_task_experiment(task_name='flipflop', architecture='vanilla',
         hidden_states, deformation_features, task_dynamics, deformation_valid
     )
     
-    # 7. Cluster units
+    # 7. Select optimal number of clusters
     if verbose:
-        print(f"\nClustering units using {method_used} features...")
+        print(f"\nSelecting optimal number of clusters...")
     
-    labels, details = classify_units(features, n_clusters=4, method='kmeans', 
+    optimal_k, cluster_scores = select_optimal_clusters(
+        features, min_clusters=2, max_clusters=8, 
+        method='combined', verbose=verbose
+    )
+    
+    if verbose:
+        print(f"  Optimal k: {optimal_k}")
+        print(f"  Silhouette scores by k: {dict(zip(cluster_scores['k_values'], [f'{s:.3f}' for s in cluster_scores['silhouette']]))}")
+    
+    # 8. Cluster units
+    if verbose:
+        print(f"\nClustering units using {method_used} features (k={optimal_k})...")
+    
+    labels, details = classify_units(features, n_clusters=optimal_k, method='kmeans', 
                                      return_details=True)
     
     # Interpret clusters with appropriate feature type
     feature_type = 'deformation' if method_used == 'deformation' else 'pca'
-    interpretation = interpret_clusters(features, labels, feature_type=feature_type)
+    in9erpretation = interpret_clusters(features, labels, feature_type=feature_type)
     
     if verbose:
         print(f"  Silhouette score: {details['silhouette']:.3f}")
@@ -239,7 +253,7 @@ def run_single_task_experiment(task_name='flipflop', architecture='vanilla',
         if verbose:
             print(f"  Using {method_used} features (baseline comparison not applicable)")
     
-    # 9. Visualize results
+    # 10. Visualize results
     if verbose:
         print(f"\nGenerating visualizations...")
     
@@ -355,6 +369,8 @@ def run_single_task_experiment(task_name='flipflop', architecture='vanilla',
         'features': features,
         'feature_method': method_used,
         'labels': labels,
+        'optimal_k': optimal_k,
+        'cluster_scores': cluster_scores,
         'interpretation': interpretation,
         'silhouette': details['silhouette'],
         'baseline_comparison': baseline_comparison
