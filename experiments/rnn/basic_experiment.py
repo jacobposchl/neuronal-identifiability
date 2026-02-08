@@ -30,6 +30,7 @@ def run_single_task_experiment(task_name='flipflop', architecture='vanilla',
                                 hidden_size=128, n_epochs=2000, lr=0.001,
                                 n_trials=50, trial_length=200,
                                 latent_dim='auto', variance_threshold=0.90,
+                                activity_reg=0.0, diversity_reg=0.0,
                                 save_checkpoint=True, verbose=True):
     """
     Run complete experiment on a single task.
@@ -53,6 +54,8 @@ def run_single_task_experiment(task_name='flipflop', architecture='vanilla',
         trial_length: Length of each trial
         latent_dim: PCA dimensionality ('auto' or int, default 'auto')
         variance_threshold: Variance threshold for auto PCA (default 0.90)
+        activity_reg: L2 penalty on hidden states (default 0.0)
+        diversity_reg: Penalty on unit correlations (default 0.0)
         save_checkpoint: Whether to save trained model
         verbose: Print progress
     
@@ -98,7 +101,9 @@ def run_single_task_experiment(task_name='flipflop', architecture='vanilla',
     checkpoint_path = f"results/checkpoints/{task_name}_{architecture}_h{hidden_size}.pt" if save_checkpoint else None
     rnn, history = task.train_rnn(rnn, n_epochs=n_epochs, lr=lr, 
                                    trial_length=100, verbose=verbose,
-                                   save_path=checkpoint_path)
+                                   save_path=checkpoint_path,
+                                   activity_reg=activity_reg,
+                                   diversity_reg=diversity_reg)
     
     final_accuracy = history['accuracy'][-1]
     if verbose:
@@ -480,6 +485,10 @@ def main():
                        help='PCA latent dimensions ("auto" or integer, default: auto)')
     parser.add_argument('--variance-threshold', type=float, default=0.90,
                        help='Variance threshold for auto PCA selection (default: 0.90)')
+    parser.add_argument('--activity-reg', type=float, default=0.0,
+                       help='L2 penalty on hidden state activations (default: 0.0, try 0.001)')
+    parser.add_argument('--diversity-reg', type=float, default=0.0,
+                       help='Penalty on unit correlations to encourage diversity (default: 0.0, try 0.01)')
     parser.add_argument('--no-save', action='store_true',
                        help='Do not save checkpoint')
     parser.add_argument('--quiet', action='store_true',
@@ -516,6 +525,8 @@ def main():
             trial_length=args.trial_length,
             latent_dim=latent_dim,
             variance_threshold=args.variance_threshold,
+            activity_reg=args.activity_reg,
+            diversity_reg=args.diversity_reg,
             save_checkpoint=not args.no_save,
             verbose=not args.quiet
         )

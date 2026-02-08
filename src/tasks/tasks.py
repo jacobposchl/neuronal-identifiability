@@ -28,7 +28,8 @@ class TaskBase:
         raise NotImplementedError
     
     def train_rnn(self, rnn, n_epochs, batch_size=32, lr=0.001, 
-                  trial_length=100, verbose=True, save_path=None):
+                  trial_length=100, verbose=True, save_path=None,
+                  activity_reg=0.0, diversity_reg=0.0):
         """
         Train RNN on this task.
         
@@ -40,6 +41,8 @@ class TaskBase:
             trial_length: Length of each trial sequence
             verbose: Print progress
             save_path: Path to save checkpoint (optional)
+            activity_reg: L2 penalty on hidden state magnitude (prevents saturation, default 0.0)
+            diversity_reg: Penalty on hidden state correlation (encourages diverse units, default 0.0)
         
         Returns:
             rnn: Trained model
@@ -55,6 +58,8 @@ class TaskBase:
             print(f"  Hidden size: {rnn.hidden_size}")
             print(f"  Epochs: {n_epochs}")
             print(f"  Learning rate: {lr}")
+            if activity_reg > 0 or diversity_reg > 0:
+                print(f"  Regularization: activity={activity_reg}, diversity={diversity_reg}")
             print("-" * 60)
         
         rnn.train()
@@ -65,11 +70,35 @@ class TaskBase:
             # Zero gradients
             optimizer.zero_grad()
             
-            # Forward pass
-            outputs = rnn(inputs, return_hidden_states=False)
+            # Forward pass (need hidden states for regularization)
+            if activity_reg > 0 or diversity_reg > 0:
+                outputs, hidden_states = rnn(inputs, return_hidden_states=True)
+            else:
+                outputs = rnn(inputs, return_hidden_states=False)
             
-            # Compute loss
+            # Compute task loss
             loss = criterion(outputs, targets)
+            
+            # Add activity regularization (L2 on hidden state magnitude)
+            if activity_reg > 0:
+                # Penalize large activations to prevent saturation
+                activity_penalty = activity_reg * torch.mean(hidden_states ** 2)
+                loss = loss + activity_penalty
+            
+            # Add diversity regularization (penalize high correlations between units)
+            if diversity_reg > 0:
+                # Compute correlation matrix of hidden units across time
+                # hidden_states: (batch, time, hidden_size)
+                h_flat = hidden_states.reshape(-1, hidden_states.size(-1))  # (batch*time, hidden_size)
+                h_centered = h_flat - h_flat.mean(dim=0, keepdim=True)
+                h_norm = h_centered / (h_centered.std(dim=0, keepdim=True) + 1e-8)
+                corr_matrix = torch.mm(h_norm.t(), h_norm) / h_flat.size(0)
+                
+                # Penalize off-diagonal correlations (encourage independence)
+                n_units = corr_matrix.size(0)
+                mask = 1 - torch.eye(n_units, device=corr_matrix.device)
+                diversity_penalty = diversity_reg * torch.sum(torch.abs(corr_matrix * mask)) / (n_units * (n_units - 1))
+                loss = loss + diversity_penalty
             
             # Backward pass
             loss.backward()
