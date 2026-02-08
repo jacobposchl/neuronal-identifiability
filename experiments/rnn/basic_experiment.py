@@ -212,7 +212,7 @@ def run_single_task_experiment(task_name='flipflop', architecture='vanilla',
     
     # Interpret clusters with appropriate feature type
     feature_type = 'deformation' if method_used == 'deformation' else 'pca'
-    in9erpretation = interpret_clusters(features, labels, feature_type=feature_type)
+    interpretation = interpret_clusters(features, labels, feature_type=feature_type)
     
     if verbose:
         print(f"  Silhouette score: {details['silhouette']:.3f}")
