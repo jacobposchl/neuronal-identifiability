@@ -13,13 +13,15 @@ Intended contents:
 
 from .rnn_features import (
     extract_rnn_unit_features,
+    extract_enhanced_rnn_features,
     classify_units,
     interpret_clusters,
     print_cluster_summary,
     compare_to_baseline,
     tdr_baseline,
     selectivity_baseline,
-    select_features_by_task_dynamics
+    select_features_by_task_dynamics,
+    select_optimal_clusters
 )
 from .spectral_analysis import (
     compute_recurrent_eigenvalues,
@@ -54,6 +56,7 @@ from .statistical_tests import (
 
 __all__ = [
     'extract_rnn_unit_features',
+    'extract_enhanced_rnn_features',
     'classify_units',
     'interpret_clusters',
     'print_cluster_summary',
@@ -61,6 +64,7 @@ __all__ = [
     'tdr_baseline',
     'selectivity_baseline',
     'select_features_by_task_dynamics',
+    'select_optimal_clusters',
     'compute_recurrent_eigenvalues',
     'classify_eigenvalues',
     'compare_eigenvalues_to_deformation',

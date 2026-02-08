@@ -139,7 +139,7 @@ def extract_rnn_unit_features(hidden_states, rotation_trajectory,
                                contraction_trajectory, expansion_trajectory,
                                smooth_sigma=5, use_abs=True, normalize=True):
     """
-    Extract deformation-based features for RNN units.
+    Extract deformation-based features for RNN units (basic version).
     
     Computes correlation between each unit's activity and the three deformation
     modes (rotation, contraction, expansion) over time.
@@ -147,6 +147,9 @@ def extract_rnn_unit_features(hidden_states, rotation_trajectory,
     Key improvements for ground truth recovery:
     - use_abs=True: Uses absolute correlations (ignores polarity artifacts)
     - normalize=True: Normalizes to sum=1 (ratio-based features)
+    
+    Note: For enhanced features with temporal/contextual resolution, use
+    extract_enhanced_rnn_features() instead.
     
     Args:
         hidden_states: (n_units, n_timesteps) RNN hidden unit activations
@@ -229,12 +232,252 @@ def extract_rnn_unit_features(hidden_states, rotation_trajectory,
     return np.array(features)
 
 
+def extract_enhanced_rnn_features(hidden_states, rotation_trajectory, 
+                                  contraction_trajectory, expansion_trajectory,
+                                  task_info, inputs=None,
+                                  smooth_sigma=5, use_abs=True, normalize=True):
+    """
+    Extract enhanced deformation features with temporal and contextual resolution.
+    
+    Addresses the problem of multiple units correlating with the same deformation mode
+    but serving different functional roles by adding:
+    - Temporal specificity (early/middle/late trial phases)
+    - Task-phase specificity (encoding/integration/decision)
+    - Contextual specificity (Context A vs Context B for context tasks)
+    
+    Args:
+        hidden_states: (n_units, n_timesteps) RNN hidden unit activations
+        rotation_trajectory: (n_timesteps,) rotation magnitude over time
+        contraction_trajectory: (n_timesteps,) contraction magnitude over time
+        expansion_trajectory: (n_timesteps,) expansion trajectory over time
+        task_info: Dict containing:
+            - 'trial_length': length of each trial (e.g., 200)
+            - 'n_trials': number of trials (e.g., 50)
+            - 'task_name': name of task (e.g., 'context')
+            - 'phase_boundaries': Optional dict with phase timing info
+        inputs: (n_timesteps, input_size) input sequences (needed for context detection)
+        smooth_sigma: Gaussian smoothing parameter
+        use_abs: If True, use absolute values of correlations
+        normalize: If True, normalize feature groups to sum=1
+    
+    Returns:
+        features: (n_units, n_features) array with:
+            - First 3: global R, C, E correlations (backwards compatible)
+            - Next 9: temporal R, C, E for early/mid/late periods
+            - Additional: task-specific contextual features
+    """
+    n_units, n_timesteps = hidden_states.shape
+    trial_length = task_info.get('trial_length', 200)
+    n_trials = task_info.get('n_trials', n_timesteps // trial_length)
+    task_name = task_info.get('task_name', 'unknown').lower()
+    
+    # Ensure trajectories match length
+    min_len = min(n_timesteps, len(rotation_trajectory), 
+                  len(contraction_trajectory), len(expansion_trajectory))
+    
+    hidden_states = hidden_states[:, :min_len]
+    rotation_trajectory = rotation_trajectory[:min_len]
+    contraction_trajectory = contraction_trajectory[:min_len]
+    expansion_trajectory = expansion_trajectory[:min_len]
+    if inputs is not None:
+        inputs = inputs[:min_len]
+    
+    # Smooth hidden states
+    if smooth_sigma > 0:
+        hidden_states_smooth = np.array([
+            gaussian_filter1d(hidden_states[i], sigma=smooth_sigma)
+            for i in range(n_units)
+        ])
+    else:
+        hidden_states_smooth = hidden_states
+    
+    # Define temporal boundaries (thirds)
+    third = min_len // 3
+    early_slice = slice(0, third)
+    middle_slice = slice(third, 2*third)
+    late_slice = slice(2*third, min_len)
+    
+    all_features = []
+    
+    for i in range(n_units):
+        unit_activity = hidden_states_smooth[i]
+        unit_features = []
+        
+        # === GLOBAL FEATURES (3 features) ===
+        # These maintain backwards compatibility
+        global_feats = _compute_correlations(
+            unit_activity,
+            rotation_trajectory,
+            contraction_trajectory,
+            expansion_trajectory,
+            use_abs=use_abs,
+            normalize=normalize
+        )
+        unit_features.extend(global_feats)
+        
+        # === TEMPORAL FEATURES (9 features) ===
+        # Early period
+        early_feats = _compute_correlations(
+            unit_activity[early_slice],
+            rotation_trajectory[early_slice],
+            contraction_trajectory[early_slice],
+            expansion_trajectory[early_slice],
+            use_abs=use_abs,
+            normalize=normalize
+        )
+        unit_features.extend(early_feats)
+        
+        # Middle period
+        middle_feats = _compute_correlations(
+            unit_activity[middle_slice],
+            rotation_trajectory[middle_slice],
+            contraction_trajectory[middle_slice],
+            expansion_trajectory[middle_slice],
+            use_abs=use_abs,
+            normalize=normalize
+        )
+        unit_features.extend(middle_feats)
+        
+        # Late period
+        late_feats = _compute_correlations(
+            unit_activity[late_slice],
+            rotation_trajectory[late_slice],
+            contraction_trajectory[late_slice],
+            expansion_trajectory[late_slice],
+            use_abs=use_abs,
+            normalize=normalize
+        )
+        unit_features.extend(late_feats)
+        
+        # === CONTEXTUAL FEATURES (task-specific) ===
+        if task_name == 'context' and inputs is not None:
+            # Context task: separate Context A vs Context B
+            context_feats = _compute_context_features(
+                unit_activity, inputs, trial_length, n_trials,
+                rotation_trajectory, contraction_trajectory, expansion_trajectory,
+                use_abs=use_abs, normalize=normalize
+            )
+            unit_features.extend(context_feats)
+        
+        all_features.append(unit_features)
+    
+    return np.array(all_features)
+
+
+def _compute_correlations(activity, rotation, contraction, expansion,
+                          use_abs=True, normalize=True):
+    """
+    Helper function to compute correlations between activity and deformation signals.
+    
+    Returns:
+        [corr_rotation, corr_contraction, corr_expansion]
+    """
+    if len(activity) == 0 or len(rotation) == 0:
+        return [0.33, 0.33, 0.33] if normalize else [0.0, 0.0, 0.0]
+    
+    # Compute correlations
+    corr_r = np.corrcoef(activity, rotation)[0, 1] if len(activity) > 1 else 0.0
+    corr_c = np.corrcoef(activity, contraction)[0, 1] if len(activity) > 1 else 0.0
+    corr_e = np.corrcoef(activity, expansion)[0, 1] if len(activity) > 1 else 0.0
+    
+    # Handle NaN
+    corr_r = 0.0 if np.isnan(corr_r) else corr_r
+    corr_c = 0.0 if np.isnan(corr_c) else corr_c
+    corr_e = 0.0 if np.isnan(corr_e) else corr_e
+    
+    # Use absolute values
+    if use_abs:
+        corr_r = abs(corr_r)
+        corr_c = abs(corr_c)
+        corr_e = abs(corr_e)
+    
+    # Normalize to sum to 1
+    if normalize:
+        total = corr_r + corr_c + corr_e
+        if total > 1e-10:
+            corr_r /= total
+            corr_c /= total
+            corr_e /= total
+        else:
+            corr_r = corr_c = corr_e = 1/3
+    
+    return [corr_r, corr_c, corr_e]
+
+
+def _compute_context_features(activity, inputs, trial_length, n_trials,
+                              rotation, contraction, expansion,
+                              use_abs=True, normalize=True):
+    """
+    Compute context-specific features for context integration task.
+    
+    Context A trials: first 20 timesteps have input[0] > 0.5
+    Context B trials: first 20 timesteps have input[1] > 0.5
+    
+    Returns:
+        [contextA_R, contextA_C, contextA_E, contextB_R, contextB_C, contextB_E] (6 features)
+    """
+    # Reconstruct trial structure
+    n_total_timesteps = len(activity)
+    actual_n_trials = min(n_trials, n_total_timesteps // trial_length)
+    
+    # Identify context A vs B trials
+    contextA_mask = np.zeros(n_total_timesteps, dtype=bool)
+    contextB_mask = np.zeros(n_total_timesteps, dtype=bool)
+    
+    for trial_idx in range(actual_n_trials):
+        trial_start = trial_idx * trial_length
+        trial_end = min(trial_start + trial_length, n_total_timesteps)
+        
+        # Check first 20 timesteps of trial
+        check_end = min(trial_start + 20, trial_end)
+        if check_end > trial_start and inputs.shape[0] > check_end:
+            trial_inputs = inputs[trial_start:check_end]
+            
+            # Context A: input channel 0 dominant
+            if trial_inputs.shape[1] >= 2:
+                if np.mean(trial_inputs[:, 0]) > 0.5:
+                    contextA_mask[trial_start:trial_end] = True
+                # Context B: input channel 1 dominant
+                elif np.mean(trial_inputs[:, 1]) > 0.5:
+                    contextB_mask[trial_start:trial_end] = True
+    
+    # Compute correlations separately for each context
+    contextA_feats = [0.33, 0.33, 0.33] if normalize else [0.0, 0.0, 0.0]
+    contextB_feats = [0.33, 0.33, 0.33] if normalize else [0.0, 0.0, 0.0]
+    
+    if np.sum(contextA_mask) > 10:  # Need enough samples
+        contextA_feats = _compute_correlations(
+            activity[contextA_mask],
+            rotation[contextA_mask],
+            contraction[contextA_mask],
+            expansion[contextA_mask],
+            use_abs=use_abs,
+            normalize=normalize
+        )
+    
+    if np.sum(contextB_mask) > 10:
+        contextB_feats = _compute_correlations(
+            activity[contextB_mask],
+            rotation[contextB_mask],
+            contraction[contextB_mask],
+            expansion[contextB_mask],
+            use_abs=use_abs,
+            normalize=normalize
+        )
+    
+    return contextA_feats + contextB_feats
+
+
 def classify_units(features, n_clusters=4, method='kmeans', return_details=False):
     """
     Classify RNN units based on deformation features.
     
+    Automatically handles both basic (n_features=3) and enhanced (n_features>3) feature formats.
+    
     Args:
-        features: (n_units, 3) deformation feature array
+        features: (n_units, n_features) deformation feature array
+                  n_features=3: basic [R, C, E] correlations
+                  n_features>3: enhanced with temporal/contextual features
         n_clusters: Number of clusters (default 4: rotators, integrators, explorers, mixed)
         method: 'kmeans' or 'argmax' (argmax assigns based on dominant feature)
         return_details: If True, return cluster centers and metrics
@@ -318,7 +561,8 @@ def interpret_clusters(features, labels, cluster_names=None, threshold=0.03, str
     """
     Interpret cluster assignments with 3-tier confidence classification.
     
-    Handles both raw correlation features and normalized ratio-based features.
+    Handles basic (3 features) and enhanced (>3 features) feature formats.
+    For enhanced features, identifies temporal and contextual specialization.
     
     For normalized features (recommended):
     - Features sum to 1 (ratio of correlation strengths)
@@ -331,7 +575,10 @@ def interpret_clusters(features, labels, cluster_names=None, threshold=0.03, str
     - Uses absolute correlation thresholds (0.03, 0.10)
     
     Args:
-        features: (n_units, 3) deformation feature array
+        features: (n_units, n_features) deformation feature array
+                  n_features=3: basic [R, C, E]
+                  n_features=12: enhanced with temporal [global + early/mid/late]
+                  n_features=18: enhanced with temporal + contextual [+ contextA/B]
         labels: (n_units,) cluster assignments
         cluster_names: Optional list of names (default: auto-assign based on features)
         threshold: For raw features - minimum correlation (default: 0.03)
@@ -343,7 +590,12 @@ def interpret_clusters(features, labels, cluster_names=None, threshold=0.03, str
         interpretation: Dict mapping cluster ID to interpretation dict
     """
     n_clusters = len(np.unique(labels))
+    n_features = features.shape[1]
     interpretation = {}
+    
+    # Detect feature format
+    is_enhanced = (n_features > 3)
+    has_context = (n_features >= 18)  # 3 global + 9 temporal + 6 context
     
     if feature_type == 'deformation':
         feature_names = ['Rotation', 'Contraction', 'Expansion']
@@ -385,6 +637,16 @@ def interpret_clusters(features, labels, cluster_names=None, threshold=0.03, str
         cluster_features = features[cluster_mask]
         mean_features = np.mean(cluster_features, axis=0)
         
+        # For enhanced features, analyze temporal and contextual patterns
+        if is_enhanced:
+            interpretation[cluster_id] = _interpret_enhanced_cluster(
+                cluster_id, cluster_features, mean_features, labels,
+                feature_type, normalized, has_context,
+                weak_threshold, strong_threshold
+            )
+            continue
+        
+        # === BASIC FEATURES (original logic) ===
         # For normalized features, already positive; for raw, use absolute
         if normalized:
             abs_features = mean_features  # Already positive
@@ -436,6 +698,113 @@ def interpret_clusters(features, labels, cluster_names=None, threshold=0.03, str
     return interpretation
 
 
+def _interpret_enhanced_cluster(cluster_id, cluster_features, mean_features, all_labels,
+                                feature_type, normalized, has_context,
+                                weak_threshold, strong_threshold):
+    """
+    Interpret a cluster using enhanced features (temporal + contextual).
+    
+    Feature structure:
+    - [0:3]: global R, C, E
+    - [3:6]: early R, C, E
+    - [6:9]: middle R, C, E
+    - [9:12]: late R, C, E
+    - [12:15]: contextA R, C, E (if has_context)
+    - [15:18]: contextB R, C, E (if has_context)
+    """
+    n_units = len(cluster_features)
+    
+    if feature_type == 'deformation':
+        type_names = ['Rotator', 'Integrator', 'Explorer']
+    else:
+        type_names = ['PC1-dom', 'PC2-dom', 'PC3-dom']
+    
+    # Extract feature groups
+    global_feats = mean_features[0:3]
+    early_feats = mean_features[3:6]
+    middle_feats = mean_features[6:9]
+    late_feats = mean_features[9:12]
+    
+    # Determine dominant deformation mode globally
+    global_dom_idx = np.argmax(global_feats)
+    global_dom_val = global_feats[global_dom_idx]
+    base_type = type_names[global_dom_idx]
+    
+    # Determine temporal specialization
+    temporal_strengths = [
+        np.max(early_feats),
+        np.max(middle_feats),
+        np.max(late_feats)
+    ]
+    temporal_max_idx = np.argmax(temporal_strengths)
+    temporal_labels = ['Early', 'Middle', 'Late']
+    temporal_label = temporal_labels[temporal_max_idx]
+    
+    # Check if temporal specialization is strong
+    temporal_specialization = temporal_strengths[temporal_max_idx] - np.mean(temporal_strengths)
+    has_temporal_spec = (temporal_specialization > 0.05)  # 5% above average
+    
+    # Contextual analysis (if available)
+    context_label = ''
+    if has_context:
+        contextA_feats = mean_features[12:15]
+        contextB_feats = mean_features[15:18]
+        
+        contextA_strength = np.max(contextA_feats)
+        contextB_strength = np.max(contextB_feats)
+        
+        context_diff = abs(contextA_strength - contextB_strength)
+        if context_diff > 0.08:  # Strong context preference
+            if contextA_strength > contextB_strength:
+                context_label = ' (Context A)'
+            else:
+                context_label = ' (Context B)'
+    
+    # Build cluster name
+    if global_dom_val < weak_threshold:
+        name = 'Mixed'
+        confidence = 'very_low'
+    elif global_dom_val < strong_threshold:
+        if has_temporal_spec:
+            name = f'{temporal_label} {base_type}?{context_label}'
+        else:
+            name = f'{base_type}?{context_label}'
+        confidence = 'low'
+    else:
+        if has_temporal_spec:
+            name = f'{temporal_label} {base_type}{context_label}'
+        else:
+            name = f'{base_type}{context_label}'
+        confidence = 'high'
+    
+    # Build interpretation dict
+    interpretation = {
+        'name': name,
+        'n_units': n_units,
+        'mean_features': mean_features,
+        'global_features': global_feats,
+        'temporal_features': {
+            'early': early_feats,
+            'middle': middle_feats,
+            'late': late_feats
+        },
+        'dominant_mode': type_names[global_dom_idx],
+        'temporal_specialization': temporal_label if has_temporal_spec else 'None',
+        'percentage': 100 * n_units / len(all_labels),
+        'confidence': confidence,
+        'max_correlation': global_dom_val
+    }
+    
+    if has_context:
+        interpretation['context_features'] = {
+            'contextA': mean_features[12:15],
+            'contextB': mean_features[15:18]
+        }
+        interpretation['context_preference'] = context_label.strip(' ()')
+    
+    return interpretation
+
+
 def print_cluster_summary(interpretation, feature_type='deformation', normalized=True):
     """
     Print human-readable summary of cluster interpretation.
@@ -466,21 +835,59 @@ def print_cluster_summary(interpretation, feature_type='deformation', normalized
         info = interpretation[cluster_id]
         
         print(f"\nCluster {cluster_id}: {info['name']} ({info['n_units']} units, {info['percentage']:.1f}%)")
-        if normalized:
-            print(f"  {labels[0]:20s}: {info['mean_features'][0]:.3f}")
-            print(f"  {labels[1]:20s}: {info['mean_features'][1]:.3f}")
-            print(f"  {labels[2]:20s}: {info['mean_features'][2]:.3f}")
-        else:
-            print(f"  Mean correlation with {labels[0]:12s}: {info['mean_features'][0]:+.3f}")
-            print(f"  Mean correlation with {labels[1]:12s}: {info['mean_features'][1]:+.3f}")
-            print(f"  Mean correlation with {labels[2]:12s}: {info['mean_features'][2]:+.3f}")
         
-        if info['dominant_mode'] is not None:
-            dom_val = info['mean_features'][np.argmax(np.abs(info['mean_features']))]
+        # Check if enhanced features are present
+        has_temporal = 'temporal_features' in info
+        has_context = 'context_features' in info
+        
+        if has_temporal or has_context:
+            # Enhanced features - show global + temporal + context
+            global_feats = info.get('global_features', info['mean_features'][:3])
+            print(f"  Global {labels[0]:15s}: {global_feats[0]:.3f}")
+            print(f"  Global {labels[1]:15s}: {global_feats[1]:.3f}")
+            print(f"  Global {labels[2]:15s}: {global_feats[2]:.3f}")
+            
+            if has_temporal:
+                temporal_spec = info.get('temporal_specialization', 'None')
+                if temporal_spec != 'None':
+                    print(f"  → Temporal specialization: {temporal_spec}")
+                    temporal_data = info['temporal_features']
+                    if temporal_spec == 'Early':
+                        feats = temporal_data['early']
+                    elif temporal_spec == 'Middle':
+                        feats = temporal_data['middle']
+                    else:
+                        feats = temporal_data['late']
+                    print(f"     {labels[0]}: {feats[0]:.3f}, {labels[1]}: {feats[1]:.3f}, {labels[2]}: {feats[2]:.3f}")
+            
+            if has_context:
+                context_pref = info.get('context_preference', '')
+                if context_pref:
+                    print(f"  → Context preference: {context_pref}")
+                    context_data = info['context_features']
+                    if 'A' in context_pref:
+                        feats = context_data['contextA']
+                    else:
+                        feats = context_data['contextB']
+                    print(f"     {labels[0]}: {feats[0]:.3f}, {labels[1]}: {feats[1]:.3f}, {labels[2]}: {feats[2]:.3f}")
+        
+        else:
+            # Basic features - original display
             if normalized:
-                print(f"  → Dominant mode: {info['dominant_mode']} ({dom_val:.3f})")
+                print(f"  {labels[0]:20s}: {info['mean_features'][0]:.3f}")
+                print(f"  {labels[1]:20s}: {info['mean_features'][1]:.3f}")
+                print(f"  {labels[2]:20s}: {info['mean_features'][2]:.3f}")
             else:
-                print(f"  → Dominant mode: {info['dominant_mode']} ({info['dominant_value']:+.3f})")
+                print(f"  Mean correlation with {labels[0]:12s}: {info['mean_features'][0]:+.3f}")
+                print(f"  Mean correlation with {labels[1]:12s}: {info['mean_features'][1]:+.3f}")
+                print(f"  Mean correlation with {labels[2]:12s}: {info['mean_features'][2]:+.3f}")
+            
+            if info['dominant_mode'] is not None:
+                dom_val = info['mean_features'][np.argmax(np.abs(info['mean_features'][:3]))]
+                if normalized:
+                    print(f"  → Dominant mode: {info['dominant_mode']} ({dom_val:.3f})")
+                else:
+                    print(f"  → Dominant mode: {info['dominant_mode']} ({info.get('dominant_value', dom_val):+.3f})")
     
     print("="*70)
 
