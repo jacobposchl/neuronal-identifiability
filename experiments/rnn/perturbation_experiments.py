@@ -61,8 +61,41 @@ def run_importance_analysis(task_name='context', hidden_size=128,
     rotation, contraction, expansion, _ = estimate_deformation_from_rnn(hidden_states)
     rotation, contraction, expansion = smooth_deformation_signals(rotation, contraction, expansion, sigma=5)
     
+    # Check deformation signal quality
+    if verbose:
+        print(f"  Deformation signal diagnostics:")
+        print(f"    Rotation:    range=[{np.min(rotation):.3f}, {np.max(rotation):.3f}], std={np.std(rotation):.3f}")
+        print(f"    Contraction: range=[{np.min(contraction):.3f}, {np.max(contraction):.3f}], std={np.std(contraction):.3f}")
+        print(f"    Expansion:   range=[{np.min(expansion):.3f}, {np.max(expansion):.3f}], std={np.std(expansion):.3f}")
+        
+        if np.std(rotation) < 0.1 and np.std(contraction) < 0.1 and np.std(expansion) < 0.1:
+            print(f"  ⚠️  WARNING: Deformation signals have very low variance!")
+            print(f"     Features will likely be uninformative.")
+    
     # Extract deformation features
     deformation_features = extract_rnn_unit_features(hidden_states, rotation, contraction, expansion)
+    
+    # CRITICAL: Check if features have variance
+    feature_stds = np.std(deformation_features, axis=0)
+    max_std = np.max(feature_stds)
+    
+    if max_std < 0.01:
+        print(f"\n❌ CRITICAL ERROR: Deformation features have no variance!")
+        print(f"   All units have identical features: {np.mean(deformation_features, axis=0)}")
+        print(f"   Feature std: {feature_stds}")
+        print(f"\n   This means:")
+        print(f"   - Deformation signals (R, C, E) are not distinguishing units")
+        print(f"   - Clustering will produce arbitrary/meaningless results")
+        print(f"   - The method is NOT working for this task")
+        print(f"\n   Possible causes:")
+        print(f"   1. Task dynamics are too simple (all units do the same thing)")
+        print(f"   2. Hidden size too small (no specialization emerges)")
+        print(f"   3. Deformation estimation failing (check signal variance)")
+        print(f"\n   Debug steps:")
+        print(f"   - Check deformation signal ranges (should vary significantly)")
+        print(f"   - Try a more complex task (parametric, matchsample)")
+        print(f"   - Increase hidden_size to 256+ to encourage specialization")
+        return None
     
     # Select features by task dynamics
     features, method_used = select_features_by_task_dynamics(
@@ -99,6 +132,14 @@ def run_importance_analysis(task_name='context', hidden_size=128,
         print(f"    Rotation    - mean: {np.mean(features[:, 0]):.3f}, std: {np.std(features[:, 0]):.3f}")
         print(f"    Contraction - mean: {np.mean(features[:, 1]):.3f}, std: {np.std(features[:, 1]):.3f}")
         print(f"    Expansion   - mean: {np.mean(features[:, 2]):.3f}, std: {np.std(features[:, 2]):.3f}")
+        
+        # Check for uniform features (all same)
+        max_feat_std = max(np.std(features[:, 0]), np.std(features[:, 1]), np.std(features[:, 2]))
+        if max_feat_std < 0.01:
+            print(f"\n  ❌ CRITICAL: Features have no variance (all units identical)!")
+            print(f"     Clustering is finding arbitrary structure in noise.")
+            print(f"     Results are NOT meaningful - method failed on this task.")
+        
         print(f"\n  Cluster distribution:")
         for label in sorted(np.unique(unit_labels)):
             type_name = interpretation[label]['name']
@@ -176,6 +217,13 @@ def run_transfer_analysis(task_a='context', task_b='parametric',
     rotation_a, contraction_a, expansion_a = smooth_deformation_signals(rotation_a, contraction_a, expansion_a, sigma=5)
     
     deformation_features_a = extract_rnn_unit_features(hidden_states_a, rotation_a, contraction_a, expansion_a)
+    
+    # Check feature variance
+    feature_stds = np.std(deformation_features_a, axis=0)
+    if np.max(feature_stds) < 0.01:
+        print(f"\n❌ Features have no variance - method failed on {task_a}")
+        return None
+    
     features_a, _ = select_features_by_task_dynamics(
         hidden_states_a, deformation_features_a, task_dynamics='unknown', deformation_valid=True)
     
@@ -232,6 +280,13 @@ def run_progressive_ablation_experiment(task_name='context', hidden_size=128,
     rotation, contraction, expansion = smooth_deformation_signals(rotation, contraction, expansion, sigma=5)
     
     deformation_features = extract_rnn_unit_features(hidden_states, rotation, contraction, expansion)
+    
+    # Check feature variance
+    feature_stds = np.std(deformation_features, axis=0)
+    if np.max(feature_stds) < 0.01:
+        print(f"\n❌ Features have no variance - method failed on this task")
+        return None
+    
     features, _ = select_features_by_task_dynamics(
         hidden_states, deformation_features, task_dynamics='unknown', deformation_valid=True)
     
@@ -313,6 +368,13 @@ def run_compression_experiment(task_name='context', hidden_size=128,
     rotation, contraction, expansion = smooth_deformation_signals(rotation, contraction, expansion, sigma=5)
     
     deformation_features = extract_rnn_unit_features(hidden_states, rotation, contraction, expansion)
+    
+    # Check feature variance
+    feature_stds = np.std(deformation_features, axis=0)
+    if np.max(feature_stds) < 0.01:
+        print(f"\n❌ Features have no variance - method failed on this task")
+        return None
+    
     features, _ = select_features_by_task_dynamics(
         hidden_states, deformation_features, task_dynamics='unknown', deformation_valid=True)
     
@@ -412,6 +474,13 @@ def run_multi_task_importance(task_names=['context', 'parametric', 'flipflop'],
     rotation, contraction, expansion = smooth_deformation_signals(rotation, contraction, expansion, sigma=5)
     
     deformation_features = extract_rnn_unit_features(hidden_states, rotation, contraction, expansion)
+    
+    # Check feature variance
+    feature_stds = np.std(deformation_features, axis=0)
+    if np.max(feature_stds) < 0.01:
+        print(f"\n❌ Features have no variance - method failed on {primary_task_name}")
+        return None
+    
     features, _ = select_features_by_task_dynamics(
         hidden_states, deformation_features, task_dynamics='unknown', deformation_valid=True)
     
