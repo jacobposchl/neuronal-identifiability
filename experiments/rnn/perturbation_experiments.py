@@ -21,8 +21,8 @@ from src.tasks import get_task
 from src.tasks.tasks import (ContextIntegrationTask, ParametricWorkingMemoryTask, 
                                FlipFlopTask, GoNoGoTask)
 from src.core.deformation_utils import estimate_deformation_from_rnn, smooth_deformation_signals
-from src.analysis.rnn_features import (extract_rnn_unit_features, classify_units, 
-                               interpret_clusters, select_features_by_task_dynamics)
+from src.analysis.rnn_features import (extract_rnn_unit_features, extract_enhanced_rnn_features,
+                               classify_units, interpret_clusters, select_features_by_task_dynamics)
 from src.analysis.perturbation import (test_unit_importance, cross_task_transfer,
                                progressive_ablation, confidence_guided_pruning,
                                task_specific_importance)
@@ -57,7 +57,9 @@ def run_importance_analysis(task_name='context', hidden_size=128,
     
     # 2. Extract and classify units
     print("\nExtracting trajectories and classifying units...")
-    hidden_states, inputs, outputs = task.extract_trajectories(rnn, n_trials=50)
+    n_trials = 50
+    trial_length = 200
+    hidden_states, inputs, outputs = task.extract_trajectories(rnn, n_trials=n_trials, trial_length=trial_length)
     
     # Estimate deformation
     rotation, contraction, expansion, _ = estimate_deformation_from_rnn(hidden_states)
@@ -74,8 +76,20 @@ def run_importance_analysis(task_name='context', hidden_size=128,
             print(f"  ⚠️  WARNING: Deformation signals have very low variance!")
             print(f"     Features will likely be uninformative.")
     
-    # Extract deformation features
-    deformation_features = extract_rnn_unit_features(hidden_states, rotation, contraction, expansion)
+    # Extract ENHANCED deformation features with temporal and contextual resolution
+    task_info = {
+        'trial_length': trial_length,
+        'n_trials': n_trials,
+        'task_name': task_name
+    }
+    deformation_features = extract_enhanced_rnn_features(
+        hidden_states, rotation, contraction, expansion,
+        task_info=task_info, inputs=inputs
+    )
+    
+    if verbose:
+        print(f"  Enhanced features shape: {deformation_features.shape}")
+        print(f"  Using temporal + contextual resolution for better unit differentiation")
     
     # CRITICAL: Check if features have variance
     feature_stds = np.std(deformation_features, axis=0)
@@ -275,12 +289,23 @@ def run_transfer_analysis(task_a='context', task_b='parametric',
     
     # 2. Classify units based on Task A
     print(f"\nClassifying units based on {task_a} dynamics...")
-    hidden_states_a, inputs_a, _ = task_obj_a.extract_trajectories(rnn_a, n_trials=50)
+    n_trials_a = 50
+    trial_length_a = 200
+    hidden_states_a, inputs_a, _ = task_obj_a.extract_trajectories(rnn_a, n_trials=n_trials_a, trial_length=trial_length_a)
     
     rotation_a, contraction_a, expansion_a, _ = estimate_deformation_from_rnn(hidden_states_a)
     rotation_a, contraction_a, expansion_a = smooth_deformation_signals(rotation_a, contraction_a, expansion_a, sigma=5)
     
-    deformation_features_a = extract_rnn_unit_features(hidden_states_a, rotation_a, contraction_a, expansion_a)
+    # Extract ENHANCED features for better unit differentiation
+    task_info_a = {
+        'trial_length': trial_length_a,
+        'n_trials': n_trials_a,
+        'task_name': task_a
+    }
+    deformation_features_a = extract_enhanced_rnn_features(
+        hidden_states_a, rotation_a, contraction_a, expansion_a,
+        task_info=task_info_a, inputs=inputs_a
+    )
     
     # Check feature variance
     feature_stds = np.std(deformation_features_a, axis=0)
@@ -336,12 +361,23 @@ def run_progressive_ablation_experiment(task_name='context', hidden_size=128,
     print(f"Final accuracy: {history['accuracy'][-1]:.2%}")
     
     print("\nClassifying units...")
-    hidden_states, inputs, _ = task.extract_trajectories(rnn, n_trials=50)
+    n_trials = 50
+    trial_length = 200
+    hidden_states, inputs, _ = task.extract_trajectories(rnn, n_trials=n_trials, trial_length=trial_length)
     
     rotation, contraction, expansion, _ = estimate_deformation_from_rnn(hidden_states)
     rotation, contraction, expansion = smooth_deformation_signals(rotation, contraction, expansion, sigma=5)
     
-    deformation_features = extract_rnn_unit_features(hidden_states, rotation, contraction, expansion)
+    # Extract ENHANCED features
+    task_info = {
+        'trial_length': trial_length,
+        'n_trials': n_trials,
+        'task_name': task_name
+    }
+    deformation_features = extract_enhanced_rnn_features(
+        hidden_states, rotation, contraction, expansion,
+        task_info=task_info, inputs=inputs
+    )
     
     # Check feature variance
     feature_stds = np.std(deformation_features, axis=0)
@@ -424,12 +460,23 @@ def run_compression_experiment(task_name='context', hidden_size=128,
     print(f"Final accuracy: {history['accuracy'][-1]:.2%}")
     
     print("\nClassifying units...")
-    hidden_states, inputs, _ = task.extract_trajectories(rnn, n_trials=50)
+    n_trials = 50
+    trial_length = 200
+    hidden_states, inputs, _ = task.extract_trajectories(rnn, n_trials=n_trials, trial_length=trial_length)
     
     rotation, contraction, expansion, _ = estimate_deformation_from_rnn(hidden_states)
     rotation, contraction, expansion = smooth_deformation_signals(rotation, contraction, expansion, sigma=5)
     
-    deformation_features = extract_rnn_unit_features(hidden_states, rotation, contraction, expansion)
+    # Extract ENHANCED features
+    task_info = {
+        'trial_length': trial_length,
+        'n_trials': n_trials,
+        'task_name': task_name
+    }
+    deformation_features = extract_enhanced_rnn_features(
+        hidden_states, rotation, contraction, expansion,
+        task_info=task_info, inputs=inputs
+    )
     
     # Check feature variance
     feature_stds = np.std(deformation_features, axis=0)
@@ -530,12 +577,23 @@ def run_multi_task_importance(task_names=['context', 'parametric', 'flipflop'],
     
     # 2. Classify units
     print(f"\nClassifying units based on {primary_task_name}...")
-    hidden_states, inputs, _ = primary_task.extract_trajectories(rnn, n_trials=50)
+    n_trials = 50
+    trial_length = 200
+    hidden_states, inputs, _ = primary_task.extract_trajectories(rnn, n_trials=n_trials, trial_length=trial_length)
     
     rotation, contraction, expansion, _ = estimate_deformation_from_rnn(hidden_states)
     rotation, contraction, expansion = smooth_deformation_signals(rotation, contraction, expansion, sigma=5)
     
-    deformation_features = extract_rnn_unit_features(hidden_states, rotation, contraction, expansion)
+    # Extract ENHANCED features
+    task_info = {
+        'trial_length': trial_length,
+        'n_trials': n_trials,
+        'task_name': primary_task_name
+    }
+    deformation_features = extract_enhanced_rnn_features(
+        hidden_states, rotation, contraction, expansion,
+        task_info=task_info, inputs=inputs
+    )
     
     # Check feature variance
     feature_stds = np.std(deformation_features, axis=0)
