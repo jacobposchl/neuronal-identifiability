@@ -162,19 +162,18 @@ def evaluate_rnn_performance(rnn, task, n_trials=50):
 def cross_task_transfer(rnn_task_a, task_a, task_b, unit_labels, interpretation,
                         n_test_trials=50, verbose=True):
     """
-    Test cross-task transfer of unit classifications.
+    Test if unit classifications from Task A transfer to Task B.
+    
+    CRITICAL: Uses the SAME RNN (trained on Task A) and tests it on Task B inputs.
+    This tests whether functional roles identified on Task A also matter for Task B.
     
     Protocol:
     1. Units classified on Task A (e.g., 'Integrator' units)
-    2. Ablate those units
-    3. Test on Task B
-    4. Does ablation hurt Task B in expected ways?
+    2. Test Task A's RNN on Task B (baseline performance)
+    3. Ablate each unit type and re-test on Task B
+    4. Compare drops - do Task A's 'Integrators' also matter for Task B?
     
-    Example:
-    - 'Integrator' units from Context task
-    - Ablate them
-    - Test on FlipFlop (also integration task)
-    - Prediction: Should hurt FlipFlop performance
+    IMPORTANT: Only meaningful if tasks have compatible input/output dimensions.
     
     Args:
         rnn_task_a: RNN trained on Task A
@@ -191,24 +190,30 @@ def cross_task_transfer(rnn_task_a, task_a, task_b, unit_labels, interpretation,
     if verbose:
         print("\n" + "="*70)
         print(f"CROSS-TASK TRANSFER ANALYSIS")
-        print(f"Training Task: {task_a.__class__.__name__}")
-        print(f"Test Task: {task_b.__class__.__name__}")
+        print(f"RNN trained on: {task_a.__class__.__name__}")
+        print(f"Testing on: {task_b.__class__.__name__}")
         print("="*70)
     
-    # Create new RNN for Task B (with correct input/output sizes)
-    hidden_size = rnn_task_a.hidden_size
-    rnn_task_b = VanillaRNN(task_b.input_size, hidden_size, task_b.output_size)
+    # Check dimension compatibility
+    if task_a.input_size != task_b.input_size or task_a.output_size != task_b.output_size:
+        if verbose:
+            print(f"\n⚠️  ERROR: Incompatible task dimensions!")
+            print(f"   Task A: input={task_a.input_size}, output={task_a.output_size}")
+            print(f"   Task B: input={task_b.input_size}, output={task_b.output_size}")
+            print(f"\n   Cross-task transfer requires matching dimensions.")
+            print(f"   Recommendation: Choose compatible tasks:")
+            print(f"   - context, parametric (both continuous tasks)")
+            print(f"   - OR implement transfer learning (fine-tune Task A RNN on Task B)")
+        return None
+    
+    # Baseline: Task A's RNN tested on Task B inputs
+    if verbose:
+        print(f"\nTesting Task A's RNN on Task B inputs (no ablation)...")
+    
+    baseline_b = evaluate_rnn_performance(rnn_task_a, task_b, n_test_trials)
     
     if verbose:
-        print(f"\nTraining on Task B...")
-    
-    rnn_task_b, _ = task_b.train_rnn(rnn_task_b, n_epochs=1000, verbose=False)
-    
-    # Baseline performance on Task B
-    baseline_b = evaluate_rnn_performance(rnn_task_b, task_b, n_test_trials)
-    
-    if verbose:
-        print(f"Baseline accuracy on Task B: {baseline_b:.2f}%")
+        print(f"Baseline (Task A RNN on Task B): {baseline_b:.2f}%")
         print(f"\nAblating Task A unit types, testing on Task B:")
         print(f"{'Unit Type (Task A)':25} {'Accuracy on Task B':>20} {'Drop':>10}")
         print("-"*70)
@@ -218,15 +223,15 @@ def cross_task_transfer(rnn_task_a, task_a, task_b, unit_labels, interpretation,
     # Test each unit type from Task A
     unique_labels = np.unique(unit_labels)
     for label in unique_labels:
-        # Get unit indices  
+        # Get unit indices from Task A classification
         unit_indices = np.where(unit_labels == label)[0].tolist()
         type_name = interpretation[label]['name']
         
-        # Ablate these units in Task B RNN
-        ablated_rnn_b = ablate_units(rnn_task_b, unit_indices, method='zero')
+        # Ablate these units in Task A's RNN (not a new network!)
+        ablated_rnn = ablate_units(rnn_task_a, unit_indices, method='zero')
         
-        # Test on Task B
-        ablated_accuracy_b = evaluate_rnn_performance(ablated_rnn_b, task_b, n_test_trials)
+        # Test ablated RNN on Task B inputs
+        ablated_accuracy_b = evaluate_rnn_performance(ablated_rnn, task_b, n_test_trials)
         accuracy_drop_b = baseline_b - ablated_accuracy_b
         
         transfer_results[type_name] = {

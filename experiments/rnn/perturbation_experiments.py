@@ -109,6 +109,11 @@ def run_importance_analysis(task_name='context', hidden_size=128,
         if details['silhouette'] < 0.3:
             print(f"\n  ⚠ WARNING: Low silhouette score suggests weak clustering structure!")
             print(f"     Clusters may not represent distinct functional types.")
+            print(f"     Perturbation results may be unreliable.")
+            print(f"\n  Recommendations:")
+            print(f"     - Try a task with clearer dynamics (parametric, matchsample)")
+            print(f"     - Increase hidden_size for more specialization")
+            print(f"     - Check if features have sufficient variance")
     
     # 3. Test importance via ablation
     importance_results = test_unit_importance(
@@ -122,6 +127,9 @@ def run_transfer_analysis(task_a='context', task_b='parametric',
                           hidden_size=128, n_epochs=2000, verbose=True):
     """
     Test cross-task transfer of unit classifications.
+    
+    Tests if units classified on Task A also matter for Task B performance.
+    Uses the SAME RNN (trained on Task A) and tests on Task B inputs.
     
     Args:
         task_a: Training task (where units are classified)
@@ -137,8 +145,22 @@ def run_transfer_analysis(task_a='context', task_b='parametric',
     print(f"CROSS-TASK TRANSFER: {task_a.upper()} → {task_b.upper()}")
     print("="*70)
     
-    # 1. Train RNN on Task A
+    # Check dimension compatibility before training
     task_obj_a = get_task(task_a)
+    task_obj_b = get_task(task_b)
+    
+    if (task_obj_a.input_size != task_obj_b.input_size or 
+        task_obj_a.output_size != task_obj_b.output_size):
+        print(f"\n⚠️  ERROR: Incompatible task dimensions!")
+        print(f"   {task_a}: input={task_obj_a.input_size}, output={task_obj_a.output_size}")
+        print(f"   {task_b}: input={task_obj_b.input_size}, output={task_obj_b.output_size}")
+        print(f"\n   Cross-task transfer requires matching dimensions.")
+        print(f"   Recommendation: Choose compatible tasks:")
+        print(f"   - context, parametric (both continuous tasks)")
+        print(f"   - matchsample (has similar structure)")
+        return None
+    
+    # 1. Train RNN on Task A
     rnn_a = VanillaRNN(task_obj_a.input_size, hidden_size, task_obj_a.output_size)
     
     print(f"\nTraining on {task_a}...")
